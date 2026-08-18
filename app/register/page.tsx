@@ -21,7 +21,22 @@ export default function AuthPage() {
 
     try {
       if (isSignUp) {
-        // 1. Sign Up User
+        // 1. Check Student ID Whitelist before signing up
+        if (!studentNumber) {
+          throw new Error('Please enter your Student ID number to register.');
+        }
+
+        const { data: allowedStudent, error: whitelistError } = await supabase
+          .from('allowed_students')
+          .select('*')
+          .eq('student_id', studentNumber.trim())
+          .single();
+
+        if (whitelistError || !allowedStudent) {
+          throw new Error('Your Student ID is not whitelisted or authorized to register. Please contact an admin.');
+        }
+
+        // 2. Sign Up User in Supabase Auth
         const { data: authData, error: authError } = await supabase.auth.signUp({
           email,
           password,
@@ -30,20 +45,20 @@ export default function AuthPage() {
         if (authError) throw authError;
 
         if (authData.user) {
-          // 2. Insert into users table (Student ID is optional)
+          // 3. Insert into users table
           const { error: profileError } = await supabase.from('users').insert([
             {
               id: authData.user.id,
               full_name: fullName,
-              student_number: studentNumber || 'N/A', // Defaults to 'N/A' if left blank by officers
+              student_number: studentNumber.trim(),
               email: email,
-              role: 'student', // Default role; promoted via Supabase dashboard
+              role: 'student', // Default role
             },
           ]);
 
           if (profileError) throw profileError;
 
-          alert('Account created successfully! Contact an admin to activate Officer privileges if needed.');
+          alert('Account created successfully! You can now log in.');
           setIsSignUp(false);
         }
       } else {
@@ -104,11 +119,12 @@ export default function AuthPage() {
               </div>
               <div>
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
-                  Student / ID Number <span className="text-slate-500 font-normal">(Optional for Officers)</span>
+                  Student / ID Number
                 </label>
                 <input
                   type="text"
-                  placeholder="e.g. 2026-00123 (Leave blank if Officer)"
+                  required
+                  placeholder="e.g. 2025-0953"
                   value={studentNumber}
                   onChange={(e) => setStudentNumber(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
