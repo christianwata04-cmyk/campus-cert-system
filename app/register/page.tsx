@@ -21,18 +21,23 @@ export default function AuthPage() {
 
     try {
       if (isSignUp) {
-        // 1. Check Student ID Whitelist before signing up
-        if (!studentNumber) {
+        // 1. Check Student ID Whitelist
+        if (!studentNumber.trim()) {
           throw new Error('Please enter your Student ID number to register.');
         }
 
         const { data: allowedStudent, error: whitelistError } = await supabase
           .from('allowed_students')
-          .select('*')
+          .select('student_id')
           .eq('student_id', studentNumber.trim())
-          .single();
+          .maybeSingle();
 
-        if (whitelistError || !allowedStudent) {
+        if (whitelistError) {
+          console.error('Whitelist query error:', whitelistError);
+          throw new Error('Unable to verify Student ID. Please try again.');
+        }
+
+        if (!allowedStudent) {
           throw new Error('Your Student ID is not whitelisted or authorized to register. Please contact an admin.');
         }
 
