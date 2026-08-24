@@ -120,7 +120,7 @@ export default function LoginPage() {
                 email: email.trim(),
                 role: 'student',
 
-                // NEW STUDENT INFORMATION
+                // STUDENT INFORMATION
                 year_level: yearLevel,
                 program: cleanProgram,
                 section: cleanSection,
@@ -228,11 +228,13 @@ export default function LoginPage() {
         <div className="text-center mb-8">
 
           <div className="inline-flex bg-indigo-600/20 p-3 rounded-full text-indigo-400 mb-3 border border-indigo-500/30">
+
             {isSignUp ? (
               <UserPlus className="w-8 h-8" />
             ) : (
               <LogIn className="w-8 h-8" />
             )}
+
           </div>
 
           <h1 className="text-2xl font-bold">
@@ -267,6 +269,7 @@ export default function LoginPage() {
 
               {/* FULL NAME */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Full Name
                 </label>
@@ -281,10 +284,12 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
 
               {/* STUDENT NUMBER */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Student / ID Number
                 </label>
@@ -301,10 +306,12 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
 
               {/* YEAR LEVEL */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Year Level
                 </label>
@@ -319,6 +326,7 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 >
+
                   <option value="">
                     Select Year Level
                   </option>
@@ -342,11 +350,14 @@ export default function LoginPage() {
                   <option value="5th Year">
                     5th Year
                   </option>
+
                 </select>
+
               </div>
 
               {/* PROGRAM */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Program / Course
                 </label>
@@ -363,10 +374,12 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
 
               {/* SECTION */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Section
                 </label>
@@ -383,6 +396,7 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
 
             </>
@@ -393,6 +407,7 @@ export default function LoginPage() {
           ========================================================== */}
 
           <div>
+
             <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
               Email Address
             </label>
@@ -407,6 +422,7 @@ export default function LoginPage() {
               }
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
             />
+
           </div>
 
           {/* ==========================================================
@@ -414,6 +430,7 @@ export default function LoginPage() {
           ========================================================== */}
 
           <div>
+
             <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
               Password
             </label>
@@ -430,6 +447,7 @@ export default function LoginPage() {
               }
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
             />
+
           </div>
 
           {/* ==========================================================
@@ -470,7 +488,27 @@ export default function LoginPage() {
 
         </div>
 
+        {/* ============================================================
+            SYSTEM CREDIT
+        ============================================================ */}
+
+        <div className="mt-5 text-center">
+
+          <p className="text-[11px] text-slate-500">
+            © 2026 Campus Check-In Portal
+          </p>
+
+          <p className="text-[11px] text-slate-500 mt-1">
+            Developed by{' '}
+            <span className="font-medium text-slate-400">
+              Christian Rey Wata
+            </span>
+          </p>
+
+        </div>
+
       </div>
+
     </div>
   );
 }
