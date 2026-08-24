@@ -7,13 +7,20 @@ import { LogIn, UserPlus } from 'lucide-react';
 
 export default function LoginPage() {
   const router = useRouter();
+
   const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Account information
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Student information
   const [fullName, setFullName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
+  const [yearLevel, setYearLevel] = useState('');
+  const [program, setProgram] = useState('');
+  const [section, setSection] = useState('');
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,78 +28,189 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
-        const cleanId = studentNumber.trim();
+        // ============================================================
+        // 1. VALIDATE STUDENT INFORMATION
+        // ============================================================
 
-        // 1. Mandatory Student ID check
+        const cleanId = studentNumber.trim();
+        const cleanName = fullName.trim();
+        const cleanProgram = program.trim();
+        const cleanSection = section.trim();
+
+        if (!cleanName) {
+          throw new Error('Please enter your full name.');
+        }
+
         if (!cleanId) {
           throw new Error('Please enter your Student ID number.');
         }
 
-        // 2. Query Whitelist Table
-        const { data: allowedStudent, error: whitelistError } = await supabase
+        if (!yearLevel) {
+          throw new Error('Please select your Year Level.');
+        }
+
+        if (!cleanProgram) {
+          throw new Error('Please enter your Program / Course.');
+        }
+
+        if (!cleanSection) {
+          throw new Error('Please enter your Section.');
+        }
+
+        // ============================================================
+        // 2. CHECK STUDENT ID WHITELIST
+        // ============================================================
+
+        const {
+          data: allowedStudent,
+          error: whitelistError,
+        } = await supabase
           .from('allowed_students')
           .select('student_id')
           .eq('student_id', cleanId)
           .maybeSingle();
 
         if (whitelistError) {
-          console.error('Whitelist error:', whitelistError);
-          throw new Error('Database error verifying Student ID.');
+          console.error(
+            'Whitelist error:',
+            whitelistError
+          );
+
+          throw new Error(
+            'Database error verifying Student ID.'
+          );
         }
 
-        // STOP HERE if ID does not exist in whitelist
         if (!allowedStudent) {
-          throw new Error(`🚫 REGISTRATION BLOCKED: Student ID "${cleanId}" is not whitelisted. Please contact an administrator.`);
+          throw new Error(
+            `🚫 REGISTRATION BLOCKED: Student ID "${cleanId}" is not whitelisted. Please contact an administrator.`
+          );
         }
 
-        // 3. Create Auth User
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email,
+        // ============================================================
+        // 3. CREATE SUPABASE AUTH USER
+        // ============================================================
+
+        const {
+          data: authData,
+          error: authError,
+        } = await supabase.auth.signUp({
+          email: email.trim(),
           password,
         });
 
-        if (authError) throw authError;
+        if (authError) {
+          throw authError;
+        }
+
+        // ============================================================
+        // 4. SAVE STUDENT PROFILE
+        // ============================================================
 
         if (authData.user) {
-          // 4. Save User Profile
-          const { error: profileError } = await supabase.from('users').insert([
-            {
-              id: authData.user.id,
-              full_name: fullName,
-              student_number: cleanId,
-              email: email,
-              role: 'student',
-            },
-          ]);
+          const {
+            error: profileError,
+          } = await supabase
+            .from('users')
+            .insert([
+              {
+                id: authData.user.id,
+                full_name: cleanName,
+                student_number: cleanId,
+                email: email.trim(),
+                role: 'student',
 
-          if (profileError) throw profileError;
+                // STUDENT INFORMATION
+                year_level: yearLevel,
+                program: cleanProgram,
+                section: cleanSection,
+              },
+            ]);
 
-          alert('Account created successfully! You can now log in.');
+          if (profileError) {
+            console.error(
+              'Profile error:',
+              profileError
+            );
+
+            throw profileError;
+          }
+
+          alert(
+            'Account created successfully! You can now log in.'
+          );
+
+          // Clear registration fields
+          setFullName('');
+          setStudentNumber('');
+          setYearLevel('');
+          setProgram('');
+          setSection('');
+          setEmail('');
+          setPassword('');
+
           setIsSignUp(false);
         }
       } else {
-        // Login Logic
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
+        // ============================================================
+        // LOGIN
+        // ============================================================
+
+        const {
+          data,
+          error,
+        } = await supabase.auth.signInWithPassword({
+          email: email.trim(),
           password,
         });
 
-        if (error) throw error;
+        if (error) {
+          throw error;
+        }
 
-        const { data: userProfile } = await supabase
+        // ============================================================
+        // GET USER ROLE
+        // ============================================================
+
+        const {
+          data: userProfile,
+          error: profileError,
+        } = await supabase
           .from('users')
           .select('role')
           .eq('id', data.user.id)
           .single();
 
-        if (userProfile?.role === 'officer' || userProfile?.role === 'admin') {
+        if (profileError) {
+          console.error(
+            'Profile query error:',
+            profileError
+          );
+        }
+
+        // ============================================================
+        // REDIRECT
+        // ============================================================
+
+        if (
+          userProfile?.role === 'officer' ||
+          userProfile?.role === 'admin'
+        ) {
           router.push('/admin/dashboard');
         } else {
           router.push('/student/dashboard');
         }
       }
     } catch (err: any) {
-      alert(err.message || 'An error occurred during authentication.');
+      console.error(
+        'Authentication error:',
+        err
+      );
+
+      alert(
+        err?.message ||
+          'An error occurred during authentication.'
+      );
     } finally {
       setLoading(false);
     }
@@ -100,89 +218,297 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-6">
+
       <div className="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md shadow-2xl">
+
+        {/* ============================================================
+            HEADER
+        ============================================================ */}
+
         <div className="text-center mb-8">
+
           <div className="inline-flex bg-indigo-600/20 p-3 rounded-full text-indigo-400 mb-3 border border-indigo-500/30">
-            {isSignUp ? <UserPlus className="w-8 h-8" /> : <LogIn className="w-8 h-8" />}
+
+            {isSignUp ? (
+              <UserPlus className="w-8 h-8" />
+            ) : (
+              <LogIn className="w-8 h-8" />
+            )}
+
           </div>
-          <h1 className="text-2xl font-bold">{isSignUp ? 'Create Account' : 'Campus Check-In Portal'}</h1>
+
+          <h1 className="text-2xl font-bold">
+            {isSignUp
+              ? 'Create Account'
+              : 'Campus Check-In Portal'}
+          </h1>
+
           <p className="text-slate-400 text-xs mt-1">
-            {isSignUp ? 'Register to create your account' : 'Sign in to access your dashboard'}
+            {isSignUp
+              ? 'Register to create your account'
+              : 'Sign in to access your dashboard'}
           </p>
+
         </div>
 
-        <form onSubmit={handleAuth} className="space-y-4">
+        {/* ============================================================
+            FORM
+        ============================================================ */}
+
+        <form
+          onSubmit={handleAuth}
+          className="space-y-4"
+        >
+
+          {/* ==========================================================
+              SIGN UP FIELDS
+          ========================================================== */}
+
           {isSignUp && (
             <>
+
+              {/* FULL NAME */}
               <div>
-                <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">Full Name</label>
+
+                <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+                  Full Name
+                </label>
+
                 <input
                   type="text"
                   required
                   placeholder="e.g. John Doe"
                   value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
+                  onChange={(e) =>
+                    setFullName(e.target.value)
+                  }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
+
+              {/* STUDENT NUMBER */}
               <div>
+
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Student / ID Number
                 </label>
+
                 <input
                   type="text"
                   required
                   placeholder="e.g. 2025-0953"
                   value={studentNumber}
-                  onChange={(e) => setStudentNumber(e.target.value)}
+                  onChange={(e) =>
+                    setStudentNumber(
+                      e.target.value
+                    )
+                  }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
+
               </div>
+
+              {/* YEAR LEVEL */}
+              <div>
+
+                <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+                  Year Level
+                </label>
+
+                <select
+                  required
+                  value={yearLevel}
+                  onChange={(e) =>
+                    setYearLevel(
+                      e.target.value
+                    )
+                  }
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
+                >
+
+                  <option value="">
+                    Select Year Level
+                  </option>
+
+                  <option value="1st Year">
+                    1st Year
+                  </option>
+
+                  <option value="2nd Year">
+                    2nd Year
+                  </option>
+
+                  <option value="3rd Year">
+                    3rd Year
+                  </option>
+
+                  <option value="4th Year">
+                    4th Year
+                  </option>
+
+                  <option value="5th Year">
+                    5th Year
+                  </option>
+
+                </select>
+
+              </div>
+
+              {/* PROGRAM */}
+              <div>
+
+                <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+                  Program / Course
+                </label>
+
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Information Systems"
+                  value={program}
+                  onChange={(e) =>
+                    setProgram(
+                      e.target.value
+                    )
+                  }
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
+                />
+
+              </div>
+
+              {/* SECTION */}
+              <div>
+
+                <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+                  Section
+                </label>
+
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. IS-2A"
+                  value={section}
+                  onChange={(e) =>
+                    setSection(
+                      e.target.value
+                    )
+                  }
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
+                />
+
+              </div>
+
             </>
           )}
 
+          {/* ==========================================================
+              EMAIL
+          ========================================================== */}
+
           <div>
-            <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">Email Address</label>
+
+            <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+              Email Address
+            </label>
+
             <input
               type="email"
               required
               placeholder="user@campus.edu"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) =>
+                setEmail(e.target.value)
+              }
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
             />
+
           </div>
 
+          {/* ==========================================================
+              PASSWORD
+          ========================================================== */}
+
           <div>
-            <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">Password</label>
+
+            <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
+              Password
+            </label>
+
             <input
               type="password"
               required
               placeholder="••••••••"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) =>
+                setPassword(
+                  e.target.value
+                )
+              }
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
             />
+
           </div>
+
+          {/* ==========================================================
+              SUBMIT
+          ========================================================== */}
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition duration-200 text-sm mt-2 shadow-lg shadow-indigo-600/20"
+            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition duration-200 text-sm mt-2 shadow-lg shadow-indigo-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {loading ? 'Processing...' : isSignUp ? 'Register Account' : 'Sign In'}
+            {loading
+              ? 'Processing...'
+              : isSignUp
+              ? 'Register Account'
+              : 'Sign In'}
           </button>
+
         </form>
 
+        {/* ============================================================
+            SWITCH LOGIN / SIGN UP
+        ============================================================ */}
+
         <div className="mt-6 pt-6 border-t border-slate-700/50 text-center">
+
           <button
-            onClick={() => setIsSignUp(!isSignUp)}
+            type="button"
+            onClick={() =>
+              setIsSignUp(!isSignUp)
+            }
             className="text-xs text-indigo-400 hover:underline"
           >
-            {isSignUp ? 'Already have an account? Sign In' : "Don't have an account? Sign Up"}
+            {isSignUp
+              ? 'Already have an account? Sign In'
+              : "Don't have an account? Sign Up"}
           </button>
+
         </div>
+
+        {/* ============================================================
+            SYSTEM CREDIT
+        ============================================================ */}
+
+        <div className="mt-5 text-center">
+
+          <p className="text-[11px] text-slate-500">
+            © 2026 Campus Check-In Portal
+          </p>
+
+          <p className="text-[11px] text-slate-500 mt-1">
+            Developed by{' '}
+            <span className="font-medium text-slate-400">
+              Christian Rey Wata
+            </span>
+          </p>
+
+        </div>
+
       </div>
+
     </div>
   );
 }
