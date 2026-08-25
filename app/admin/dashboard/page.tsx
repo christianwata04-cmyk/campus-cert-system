@@ -81,11 +81,28 @@ export default function AdminDashboard() {
   const [eventLocation, setEventLocation] = useState('');
   const [eventDate, setEventDate] = useState('');
 
-  const [checkInStart, setCheckInStart] = useState("07:30");
-  const [checkInEnd, setCheckInEnd] = useState("09:00");
+  // ============================================================
+  // INDEPENDENT MORNING / AFTERNOON SESSION SCHEDULES
+  // ============================================================
 
-  const [checkOutStart, setCheckOutStart] = useState("11:30");
-  const [checkOutEnd, setCheckOutEnd] = useState("12:30");
+  const [morningCheckInStart, setMorningCheckInStart] =
+    useState("07:30");
+  const [morningCheckInEnd, setMorningCheckInEnd] =
+    useState("09:00");
+  const [morningCheckOutStart, setMorningCheckOutStart] =
+    useState("11:30");
+  const [morningCheckOutEnd, setMorningCheckOutEnd] =
+    useState("12:30");
+
+  const [afternoonCheckInStart, setAfternoonCheckInStart] =
+    useState("13:00");
+  const [afternoonCheckInEnd, setAfternoonCheckInEnd] =
+    useState("13:30");
+  const [afternoonCheckOutStart, setAfternoonCheckOutStart] =
+    useState("16:30");
+  const [afternoonCheckOutEnd, setAfternoonCheckOutEnd] =
+    useState("17:00");
+
   // NEW: Session Type
   const [sessionType, setSessionType] =
     useState<SessionType>('full');
@@ -1678,14 +1695,10 @@ const handleExportCSV = async () => {
     if (
       !eventTitle.trim() ||
       !eventLocation.trim() ||
-      !eventDate ||
-      !checkInStart ||
-      !checkInEnd ||
-      !checkOutStart ||
-      !checkOutEnd
+      !eventDate
     ) {
       setEventMsg({
-        text: 'Please fill in all required fields.',
+        text: 'Please fill in the event title, location, and date.',
         type: 'error',
       });
       setIsSubmitting(false);
@@ -1693,55 +1706,115 @@ const handleExportCSV = async () => {
       return;
     }
 
-    if (checkInEnd <= checkInStart) {
-      setEventMsg({
-        text: 'Check-In end time must be later than Check-In start time.',
-        type: 'error',
-      });
-      setIsSubmitting(false);
-      setEventLoading(false);
-      return;
+    const validateSession = (
+      name: string,
+      checkInStart: string,
+      checkInEnd: string,
+      checkOutStart: string,
+      checkOutEnd: string
+    ): string | null => {
+      if (
+        !checkInStart ||
+        !checkInEnd ||
+        !checkOutStart ||
+        !checkOutEnd
+      ) {
+        return `${name} session is missing one or more time values.`;
+      }
+
+      if (checkInEnd <= checkInStart) {
+        return `${name} Check-In end time must be later than Check-In start time.`;
+      }
+
+      if (checkOutEnd <= checkOutStart) {
+        return `${name} Check-Out end time must be later than Check-Out start time.`;
+      }
+
+      if (checkOutStart <= checkInEnd) {
+        return `${name} Check-Out must start after the Check-In window ends.`;
+      }
+
+      return null;
+    };
+
+    if (sessionType === 'morning' || sessionType === 'full') {
+      const error = validateSession(
+        'Morning',
+        morningCheckInStart,
+        morningCheckInEnd,
+        morningCheckOutStart,
+        morningCheckOutEnd
+      );
+
+      if (error) {
+        setEventMsg({ text: error, type: 'error' });
+        setIsSubmitting(false);
+        setEventLoading(false);
+        return;
+      }
     }
 
-    if (checkOutEnd <= checkOutStart) {
-      setEventMsg({
-        text: 'Check-Out end time must be later than Check-Out start time.',
-        type: 'error',
-      });
-      setIsSubmitting(false);
-      setEventLoading(false);
-      return;
+    if (sessionType === 'afternoon' || sessionType === 'full') {
+      const error = validateSession(
+        'Afternoon',
+        afternoonCheckInStart,
+        afternoonCheckInEnd,
+        afternoonCheckOutStart,
+        afternoonCheckOutEnd
+      );
+
+      if (error) {
+        setEventMsg({ text: error, type: 'error' });
+        setIsSubmitting(false);
+        setEventLoading(false);
+        return;
+      }
+    }
+
+    if (sessionType === 'full') {
+      if (afternoonCheckInStart <= morningCheckOutEnd) {
+        setEventMsg({
+          text: 'Afternoon Check-In must start after the Morning Check-Out window ends.',
+          type: 'error',
+        });
+        setIsSubmitting(false);
+        setEventLoading(false);
+        return;
+      }
     }
 
     try {
-      // Convert HTML time inputs (HH:MM) into PostgreSQL TIME values (HH:MM:SS).
-      const formattedCheckInStart =
-        checkInStart.length === 5
-          ? `${checkInStart}:00`
-          : checkInStart;
+      // Convert HTML time inputs (HH:MM) into PostgreSQL TIME values.
+      const toPostgresTime = (time: string): string =>
+        time.length === 5 ? `${time}:00` : time;
 
-      const formattedCheckInEnd =
-        checkInEnd.length === 5
-          ? `${checkInEnd}:00`
-          : checkInEnd;
+      const morningInStart = toPostgresTime(morningCheckInStart);
+      const morningInEnd = toPostgresTime(morningCheckInEnd);
+      const morningOutStart = toPostgresTime(morningCheckOutStart);
+      const morningOutEnd = toPostgresTime(morningCheckOutEnd);
 
-      const formattedCheckOutStart =
-        checkOutStart.length === 5
-          ? `${checkOutStart}:00`
-          : checkOutStart;
+      const afternoonInStart = toPostgresTime(afternoonCheckInStart);
+      const afternoonInEnd = toPostgresTime(afternoonCheckInEnd);
+      const afternoonOutStart = toPostgresTime(afternoonCheckOutStart);
+      const afternoonOutEnd = toPostgresTime(afternoonCheckOutEnd);
 
-      const formattedCheckOutEnd =
-        checkOutEnd.length === 5
-          ? `${checkOutEnd}:00`
-          : checkOutEnd;
+      // The event itself spans the complete selected schedule.
+      const eventStartTime =
+        sessionType === 'afternoon'
+          ? afternoonCheckInStart
+          : morningCheckInStart;
 
-      // The event itself spans the complete Check-In -> Check-Out period.
+      const eventEndTime =
+        sessionType === 'morning'
+          ? morningCheckOutEnd
+          : afternoonCheckOutEnd;
+
       const startTimestamp = new Date(
-        `${eventDate}T${checkInStart}:00`
+        `${eventDate}T${eventStartTime}:00`
       ).toISOString();
 
       const endTimestamp = new Date(
-        `${eventDate}T${checkOutEnd}:00`
+        `${eventDate}T${eventEndTime}:00`
       ).toISOString();
 
       // ========================================================
@@ -1777,11 +1850,8 @@ const handleExportCSV = async () => {
       }
 
       // ========================================================
-      // 2. CREATE ATTENDANCE SESSIONS
+      // 2. CREATE INDEPENDENT ATTENDANCE SESSIONS
       // ========================================================
-      // NOTE:
-      // dev_event_sessions must contain checkout_start and checkout_end
-      // TIME columns. Run the SQL migration supplied below this file once.
 
       const sessionsToInsert: any[] = [];
 
@@ -1793,11 +1863,11 @@ const handleExportCSV = async () => {
           event_id: createdEvent.id,
           session_name: 'Morning Session',
           session_date: eventDate,
-          attendance_start: formattedCheckInStart,
-          attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckInEnd,
-          checkout_start: formattedCheckOutStart,
-          checkout_end: formattedCheckOutEnd,
+          attendance_start: morningInStart,
+          attendance_end: morningInEnd,
+          checkout_start: morningOutStart,
+          checkout_end: morningOutEnd,
+          cutoff_time: morningOutEnd,
         });
       }
 
@@ -1809,11 +1879,11 @@ const handleExportCSV = async () => {
           event_id: createdEvent.id,
           session_name: 'Afternoon Session',
           session_date: eventDate,
-          attendance_start: formattedCheckInStart,
-          attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckInEnd,
-          checkout_start: formattedCheckOutStart,
-          checkout_end: formattedCheckOutEnd,
+          attendance_start: afternoonInStart,
+          attendance_end: afternoonInEnd,
+          checkout_start: afternoonOutStart,
+          checkout_end: afternoonOutEnd,
+          cutoff_time: afternoonOutEnd,
         });
       }
 
@@ -1830,7 +1900,6 @@ const handleExportCSV = async () => {
         .insert(sessionsToInsert);
 
       if (sessionError) {
-        // Roll back the event if session creation fails.
         await supabase
           .from('events')
           .delete()
@@ -1840,6 +1909,11 @@ const handleExportCSV = async () => {
           `Event could not be completed because its attendance sessions could not be created: ${sessionError.message}`
         );
       }
+
+      console.log(
+        'ATTENDANCE SESSIONS CREATED:',
+        sessionsToInsert
+      );
 
       // ========================================================
       // 3. SUCCESS
@@ -1860,10 +1934,17 @@ const handleExportCSV = async () => {
       setEventTitle('');
       setEventLocation('');
       setEventDate('');
-      setCheckInStart('07:30');
-      setCheckInEnd('09:00');
-      setCheckOutStart('11:30');
-      setCheckOutEnd('12:30');
+
+      setMorningCheckInStart('07:30');
+      setMorningCheckInEnd('09:00');
+      setMorningCheckOutStart('11:30');
+      setMorningCheckOutEnd('12:30');
+
+      setAfternoonCheckInStart('13:00');
+      setAfternoonCheckInEnd('13:30');
+      setAfternoonCheckOutStart('16:30');
+      setAfternoonCheckOutEnd('17:00');
+
       setSessionType('full');
 
       await fetchEvents();
@@ -2853,90 +2934,192 @@ const handleExportCSV = async () => {
               </div>
 
               {/* ==================================================
-                  CHECK-IN / CHECK-OUT WINDOWS
+                  INDEPENDENT SESSION TIME WINDOWS
               =================================================== */}
 
-              {/* CHECK-IN WINDOW */}
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
-                <label className="block text-xs font-bold text-emerald-400">
-                  🟢 Check-In Time Window (In Attendance)
-                </label>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* MORNING SESSION */}
+              {(sessionType === 'morning' || sessionType === 'full') && (
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      In Starts At
+                    <label className="block text-xs font-bold text-indigo-300">
+                      🌅 Morning Session
                     </label>
-                    <input
-                      type="time"
-                      required
-                      disabled={isSubmitting}
-                      value={checkInStart}
-                      onChange={(e) =>
-                        setCheckInStart(e.target.value)
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
-                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Configure the Morning check-in and check-out window.
+                    </p>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      In Ends At (Cutoff)
+                  <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 space-y-2">
+                    <label className="block text-[11px] font-bold text-emerald-400">
+                      🟢 Check-In Time Window
                     </label>
-                    <input
-                      type="time"
-                      required
-                      disabled={isSubmitting}
-                      value={checkInEnd}
-                      onChange={(e) =>
-                        setCheckInEnd(e.target.value)
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
-                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          In Starts At
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={morningCheckInStart}
+                          onChange={(e) =>
+                            setMorningCheckInStart(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          In Ends At (Cutoff)
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={morningCheckInEnd}
+                          onChange={(e) =>
+                            setMorningCheckInEnd(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 space-y-2">
+                    <label className="block text-[11px] font-bold text-rose-400">
+                      🔴 Check-Out Time Window
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          Out Starts At
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={morningCheckOutStart}
+                          onChange={(e) =>
+                            setMorningCheckOutStart(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          Out Ends At / Final Cutoff
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={morningCheckOutEnd}
+                          onChange={(e) =>
+                            setMorningCheckOutEnd(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* CHECK-OUT WINDOW */}
-              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2">
-                <label className="block text-xs font-bold text-rose-400">
-                  🔴 Check-Out Time Window (Out Attendance)
-                </label>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* AFTERNOON SESSION */}
+              {(sessionType === 'afternoon' || sessionType === 'full') && (
+                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-3">
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      Out Starts At
+                    <label className="block text-xs font-bold text-indigo-300">
+                      ☀️ Afternoon Session
                     </label>
-                    <input
-                      type="time"
-                      required
-                      disabled={isSubmitting}
-                      value={checkOutStart}
-                      onChange={(e) =>
-                        setCheckOutStart(e.target.value)
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
-                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Configure the Afternoon check-in and check-out window.
+                    </p>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">
-                      Out Ends At
+                  <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 space-y-2">
+                    <label className="block text-[11px] font-bold text-emerald-400">
+                      🟢 Check-In Time Window
                     </label>
-                    <input
-                      type="time"
-                      required
-                      disabled={isSubmitting}
-                      value={checkOutEnd}
-                      onChange={(e) =>
-                        setCheckOutEnd(e.target.value)
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
-                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          In Starts At
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={afternoonCheckInStart}
+                          onChange={(e) =>
+                            setAfternoonCheckInStart(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          In Ends At (Cutoff)
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={afternoonCheckInEnd}
+                          onChange={(e) =>
+                            setAfternoonCheckInEnd(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/70 p-3 rounded-xl border border-slate-800 space-y-2">
+                    <label className="block text-[11px] font-bold text-rose-400">
+                      🔴 Check-Out Time Window
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          Out Starts At
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={afternoonCheckOutStart}
+                          onChange={(e) =>
+                            setAfternoonCheckOutStart(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] text-slate-400 mb-1">
+                          Out Ends At / Final Cutoff
+                        </label>
+                        <input
+                          type="time"
+                          required
+                          disabled={isSubmitting}
+                          value={afternoonCheckOutEnd}
+                          onChange={(e) =>
+                            setAfternoonCheckOutEnd(e.target.value)
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               {/* ==================================================
                   SESSION PREVIEW
@@ -2946,45 +3129,57 @@ const handleExportCSV = async () => {
                 <div className="flex items-center gap-2 mb-2">
                   <Clock className="w-4 h-4 text-indigo-400" />
                   <p className="text-xs font-semibold text-white">
-                    Session Schedule
+                    Final Session Schedule
                   </p>
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {(sessionType === 'morning' || sessionType === 'full') && (
                     <div className="text-[11px] text-slate-400">
                       <p>
-                        🌅 Morning Session:{' '}
+                        🌅 <strong className="text-white">Morning Session</strong>
+                      </p>
+                      <p className="mt-1">
+                        Check-in:{' '}
                         <span className="text-emerald-400 font-semibold">
-                          {formatTime12Hour(checkInStart)} – {formatTime12Hour(checkInEnd)}
+                          {formatTime12Hour(morningCheckInStart)} – {formatTime12Hour(morningCheckInEnd)}
                         </span>
                       </p>
-                      <p className="mt-1 text-slate-500">
-                        Check-Out:{' '}
-                        <span className="text-rose-400">
-                          {formatTime12Hour(checkOutStart)} – {formatTime12Hour(checkOutEnd)}
+                      <p className="mt-1">
+                        Check-out:{' '}
+                        <span className="text-rose-400 font-semibold">
+                          {formatTime12Hour(morningCheckOutStart)} – {formatTime12Hour(morningCheckOutEnd)}
                         </span>
+                      </p>
+                      <p className="mt-1 text-amber-400">
+                        Final cutoff: {formatTime12Hour(morningCheckOutEnd)}
                       </p>
                     </div>
                   )}
 
                   {sessionType === 'full' && (
-                    <div className="border-t border-slate-800 pt-2" />
+                    <div className="border-t border-slate-800 pt-3" />
                   )}
 
                   {(sessionType === 'afternoon' || sessionType === 'full') && (
                     <div className="text-[11px] text-slate-400">
                       <p>
-                        ☀️ Afternoon Session:{' '}
+                        ☀️ <strong className="text-white">Afternoon Session</strong>
+                      </p>
+                      <p className="mt-1">
+                        Check-in:{' '}
                         <span className="text-emerald-400 font-semibold">
-                          {formatTime12Hour(checkInStart)} – {formatTime12Hour(checkInEnd)}
+                          {formatTime12Hour(afternoonCheckInStart)} – {formatTime12Hour(afternoonCheckInEnd)}
                         </span>
                       </p>
-                      <p className="mt-1 text-slate-500">
-                        Check-Out:{' '}
-                        <span className="text-rose-400">
-                          {formatTime12Hour(checkOutStart)} – {formatTime12Hour(checkOutEnd)}
+                      <p className="mt-1">
+                        Check-out:{' '}
+                        <span className="text-rose-400 font-semibold">
+                          {formatTime12Hour(afternoonCheckOutStart)} – {formatTime12Hour(afternoonCheckOutEnd)}
                         </span>
+                      </p>
+                      <p className="mt-1 text-amber-400">
+                        Final cutoff: {formatTime12Hour(afternoonCheckOutEnd)}
                       </p>
                     </div>
                   )}
