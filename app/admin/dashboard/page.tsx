@@ -1270,12 +1270,11 @@ const handleExportCSV = async () => {
           session_date: eventDate,
           attendance_start: formattedCheckInStart,
           attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckInEnd,
+          cutoff_time: formattedCheckOutEnd,
           checkout_start: formattedCheckOutStart,
           checkout_end: formattedCheckOutEnd,
         });
       }
-
       if (
         sessionType === 'afternoon' ||
         sessionType === 'full'
@@ -1286,7 +1285,7 @@ const handleExportCSV = async () => {
           session_date: eventDate,
           attendance_start: formattedCheckInStart,
           attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckInEnd,
+          cutoff_time: formattedCheckOutEnd,
           checkout_start: formattedCheckOutStart,
           checkout_end: formattedCheckOutEnd,
         });
