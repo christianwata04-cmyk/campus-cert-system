@@ -280,6 +280,43 @@ export default function AdminDashboard() {
       setLoadingAttendees(true);
       setAttendees([]);
 
+      // ------------------------------------------------------------
+      // FETCH THE EVENT'S SESSIONS FIRST.
+      //
+      // A Full Day event has multiple independent attendance rows.
+      // A student is COMPLETED only when every required session has
+      // both a check-in and a check-out.
+      // ------------------------------------------------------------
+      const {
+        data: eventSessions,
+        error: sessionError,
+      } = await supabase
+        .from('dev_event_sessions')
+        .select('*')
+        .eq('event_id', event.id)
+        .order('attendance_start', {
+          ascending: true,
+        });
+
+      if (sessionError) {
+        throw sessionError;
+      }
+
+      const sessions = eventSessions || [];
+      setSelectedEventSessions(sessions);
+
+      // ------------------------------------------------------------
+      // FETCH ALL ATTENDANCE ROWS FOR THIS EVENT.
+      //
+      // IMPORTANT:
+      // Do NOT collapse rows by student before checking session_id.
+      // One student can legitimately have:
+      //
+      //   Morning attendance row
+      //   Afternoon attendance row
+      //
+      // Those rows must be evaluated independently.
+      // ------------------------------------------------------------
       const {
         data: rawAttendance,
         error: attendanceError,
@@ -291,38 +328,37 @@ export default function AdminDashboard() {
           ascending: false,
         });
 
-        console.log(
-  '=============================='
-);
-
-console.log(
-  'ATTENDANCE FROM DATABASE:',
-  rawAttendance
-);
-
-console.table(
-  (rawAttendance || []).map((item: any) => ({
-    id: item.id,
-    event_id: item.event_id,
-    user_id: item.user_id,
-    session_id: item.session_id,
-    check_in_time: item.check_in_time,
-    check_out_time: item.check_out_time,
-  }))
-);
-
-console.log(
-  '=============================='
-);
-
-      console.log(
-        'ATTENDANCE FROM DATABASE:',
-        rawAttendance
-      );
-
       if (attendanceError) {
         throw attendanceError;
       }
+
+      console.log(
+        '================ ATTENDANCE FROM DATABASE ================'
+      );
+
+      console.table(
+        (rawAttendance || []).map((item: any) => ({
+          id: item.id,
+          event_id: item.event_id,
+          user_id: item.user_id,
+          session_id: item.session_id,
+          check_in_time: item.check_in_time,
+          check_out_time:
+            item.check_out_time ||
+            item.checkout_time ||
+            item.check_out_at ||
+            null,
+        }))
+      );
+
+      console.log(
+        'EVENT SESSIONS:',
+        sessions
+      );
+
+      console.log(
+        '==========================================================='
+      );
 
       if (!rawAttendance || rawAttendance.length === 0) {
         setAttendees([]);
@@ -330,149 +366,373 @@ console.log(
       }
 
       // ------------------------------------------------------------
-      // IMPORTANT:
-      // If more than one attendance row exists for the same student,
-      // keep the row that contains a real checkout. This prevents a
-      // stale/incomplete row from hiding a completed attendance record.
+      // FETCH STUDENT PROFILES.
       // ------------------------------------------------------------
-      const attendanceByStudent = new Map<string, any>();
+      const userIds = Array.from(
+        new Set(
+          rawAttendance
+            .map(
+              (item: any) =>
+                item.user_id || item.student_id
+            )
+            .filter(Boolean)
+            .map(String)
+        )
+      );
+
+      const userMap: Record<string, any> = {};
+
+      if (userIds.length > 0) {
+        const {
+          data: usersData,
+          error: usersError,
+        } = await supabase
+          .from('users')
+          .select('*')
+          .in('id', userIds);
+
+        if (usersError) {
+          console.error(
+            'Error fetching users:',
+            usersError
+          );
+        }
+
+        if (usersData) {
+          usersData.forEach((user: any) => {
+            userMap[String(user.id)] = user;
+          });
+        }
+      }
+
+      // ------------------------------------------------------------
+      // GROUP ATTENDANCE BY STUDENT.
+      //
+      // This preserves BOTH Morning and Afternoon rows.
+      // ------------------------------------------------------------
+      const attendanceByStudent =
+        new Map<string, any[]>();
 
       rawAttendance.forEach((item: any) => {
         const studentKey = String(
-          item.user_id || item.student_id || item.id
+          item.user_id ||
+            item.student_id ||
+            item.id
         );
 
-        const existing = attendanceByStudent.get(studentKey);
+        const existing =
+          attendanceByStudent.get(studentKey) || [];
 
-        if (!existing) {
-          attendanceByStudent.set(studentKey, item);
-          return;
-        }
+        existing.push({
+          ...item,
+          check_out_time:
+            item.check_out_time ||
+            item.checkout_time ||
+            item.check_out_at ||
+            null,
+        });
 
-        const existingCheckout =
-          existing.check_out_time ||
-          existing.checkout_time ||
-          existing.check_out_at;
-
-        const currentCheckout =
-          item.check_out_time ||
-          item.checkout_time ||
-          item.check_out_at;
-
-        // A row with checkout always wins over one without checkout.
-        if (!existingCheckout && currentCheckout) {
-          attendanceByStudent.set(studentKey, item);
-          return;
-        }
-
-        // If both have the same checkout state, keep the newest check-in.
-        if (
-          Boolean(existingCheckout) === Boolean(currentCheckout) &&
-          new Date(item.check_in_time || 0).getTime() >
-            new Date(existing.check_in_time || 0).getTime()
-        ) {
-          attendanceByStudent.set(studentKey, item);
-        }
+        attendanceByStudent.set(
+          studentKey,
+          existing
+        );
       });
 
-      const normalizedAttendance = Array.from(
-        attendanceByStudent.values()
+      // ------------------------------------------------------------
+      // BUILD ONE SUMMARY CARD PER STUDENT.
+      //
+      // STATUS RULES:
+      //
+      // COMPLETED
+      //   Every required session has check-in + check-out.
+      //
+      // NO SIGN-OUT
+      //   Student checked in to at least one required session,
+      //   but that session has no checkout yet.
+      //
+      // INCOMPLETE
+      //   A required session has already finished but the student
+      //   has no attendance record for that session.
+      //
+      // PENDING
+      //   A required session has not happened yet.
+      // ------------------------------------------------------------
+      const mappedData = Array.from(
+        attendanceByStudent.entries()
+      ).map(
+        ([studentKey, studentRows]) => {
+          const sessionAttendance =
+            sessions.map((session: any) => {
+              const sessionRows =
+                studentRows.filter(
+                  (row: any) =>
+                    String(row.session_id || '') ===
+                    String(session.id || '')
+                );
+
+              // Prefer the newest row for this exact session.
+              const row =
+                [...sessionRows].sort(
+                  (a, b) =>
+                    new Date(
+                      b.check_in_time || 0
+                    ).getTime() -
+                    new Date(
+                      a.check_in_time || 0
+                    ).getTime()
+                )[0] || null;
+
+              const checkOut =
+                row?.check_out_time || null;
+
+              return {
+                session_id: session.id,
+                session_name:
+                  session.session_name ||
+                  session.title ||
+                  'Session',
+                session_date:
+                  session.session_date ||
+                  event.event_date ||
+                  null,
+                attendance_start:
+                  session.attendance_start ||
+                  null,
+                attendance_end:
+                  session.attendance_end ||
+                  null,
+                checkout_start:
+                  session.checkout_start ||
+                  null,
+                checkout_end:
+                  session.checkout_end ||
+                  session.cutoff_time ||
+                  null,
+                attendance_id:
+                  row?.id || null,
+                check_in_time:
+                  row?.check_in_time || null,
+                check_out_time:
+                  checkOut,
+              };
+            });
+
+          // --------------------------------------------------------
+          // LEGACY / SINGLE-SESSION FALLBACK
+          //
+          // If old data has no matching session_id but this event
+          // contains exactly one session, use that row.
+          // --------------------------------------------------------
+          if (
+            sessions.length === 1 &&
+            sessionAttendance[0] &&
+            !sessionAttendance[0].attendance_id &&
+            studentRows.length > 0
+          ) {
+            const row =
+              [...studentRows].sort(
+                (a, b) =>
+                  new Date(
+                    b.check_in_time || 0
+                  ).getTime() -
+                  new Date(
+                    a.check_in_time || 0
+                  ).getTime()
+              )[0];
+
+            sessionAttendance[0] = {
+              ...sessionAttendance[0],
+              attendance_id:
+                row.id || null,
+              check_in_time:
+                row.check_in_time || null,
+              check_out_time:
+                row.check_out_time || null,
+            };
+          }
+
+          const hasAllSessionsCompleted =
+            sessions.length > 0 &&
+            sessionAttendance.every(
+              (sessionRow: any) =>
+                Boolean(
+                  sessionRow.check_in_time
+                ) &&
+                Boolean(
+                  sessionRow.check_out_time
+                )
+            );
+
+          const hasNoSignOut =
+            sessionAttendance.some(
+              (sessionRow: any) =>
+                Boolean(
+                  sessionRow.check_in_time
+                ) &&
+                !sessionRow.check_out_time
+            );
+
+          const isSessionFinished = (
+            sessionRow: any
+          ) => {
+            const endTime =
+              sessionRow.checkout_end ||
+              sessionRow.attendance_end;
+
+            if (
+              !sessionRow.session_date ||
+              !endTime
+            ) {
+              return false;
+            }
+
+            const dateText = String(
+              sessionRow.session_date
+            ).slice(0, 10);
+
+            const timeText = String(
+              endTime
+            ).slice(0, 8);
+
+            const sessionEnd = new Date(
+              `${dateText}T${timeText}`
+            );
+
+            return (
+              !Number.isNaN(
+                sessionEnd.getTime()
+              ) &&
+              new Date() >= sessionEnd
+            );
+          };
+
+          const hasFinishedMissingSession =
+            sessionAttendance.some(
+              (sessionRow: any) =>
+                !sessionRow.check_in_time &&
+                isSessionFinished(sessionRow)
+            );
+
+          let attendanceStatus =
+            'PENDING';
+
+          if (
+            hasAllSessionsCompleted
+          ) {
+            attendanceStatus =
+              'COMPLETED';
+          } else if (
+            hasNoSignOut
+          ) {
+            attendanceStatus =
+              'NO SIGN-OUT';
+          } else if (
+            hasFinishedMissingSession
+          ) {
+            attendanceStatus =
+              'INCOMPLETE';
+          }
+
+          const latestCheckIn =
+            studentRows
+              .filter(
+                (row: any) =>
+                  row.check_in_time
+              )
+              .sort(
+                (a, b) =>
+                  new Date(
+                    b.check_in_time
+                  ).getTime() -
+                  new Date(
+                    a.check_in_time
+                  ).getTime()
+              )[0]?.check_in_time ||
+            null;
+
+          const latestCheckOut =
+            studentRows
+              .filter(
+                (row: any) =>
+                  row.check_out_time
+              )
+              .sort(
+                (a, b) =>
+                  new Date(
+                    b.check_out_time
+                  ).getTime() -
+                  new Date(
+                    a.check_out_time
+                  ).getTime()
+              )[0]?.check_out_time ||
+            null;
+
+          return {
+            id:
+              `student-${studentKey}`,
+            user_id:
+              studentRows[0].user_id ||
+              studentRows[0].student_id ||
+              studentKey,
+            profiles:
+              userMap[
+                String(
+                  studentRows[0].user_id ||
+                    studentRows[0].student_id ||
+                    ''
+                )
+              ] || null,
+
+            // Overall event-level values.
+            check_in_time:
+              latestCheckIn,
+            check_out_time:
+              latestCheckOut,
+
+            // IMPORTANT: this is now the source of truth.
+            attendance_status:
+              attendanceStatus,
+
+            // Full per-session breakdown.
+            session_attendance:
+              sessionAttendance,
+          };
+        }
       );
 
-      const userIds = normalizedAttendance
-        .map(
-          (item: any) =>
-            item.user_id || item.student_id
-        )
-        .filter(Boolean);
+      console.log(
+        '================ ATTENDANCE SUMMARY ================'
+      );
 
-const userMap: Record<string, any> = {};
+      console.table(
+        mappedData.map((item: any) => ({
+          student:
+            item.profiles?.full_name ||
+            item.profiles?.name ||
+            item.user_id,
+          status:
+            item.attendance_status,
+          sessions:
+            item.session_attendance
+              .map(
+                (s: any) =>
+                  `${s.session_name}: ${
+                    s.check_in_time
+                      ? 'IN'
+                      : 'NO IN'
+                  } / ${
+                    s.check_out_time
+                      ? 'OUT'
+                      : 'NO OUT'
+                  }`
+              )
+              .join(' | '),
+        }))
+      );
 
-if (userIds.length > 0) {
-  const {
-    data: usersData,
-    error: usersError,
-  } = await supabase
-    .from('users')
-    .select('*')
-    .in('id', userIds);
-
-  if (usersError) {
-    console.error('Error fetching users:', usersError);
-  }
-
-  if (usersData) {
-    usersData.forEach((user: any) => {
-      // Primary key
-      if (user.id) {
-        userMap[String(user.id)] = user;
-      }
-
-      // Also allow lookup by student number
-      if (user.student_number) {
-        userMap[String(user.student_number)] = user;
-      }
-
-      // Also allow lookup by student ID
-      if (user.student_id) {
-        userMap[String(user.student_id)] = user;
-      }
-
-      // Also allow lookup by email
-      if (user.email) {
-        userMap[String(user.email).toLowerCase()] = user;
-      }
-    });
-  }
-}
-
-const mappedData = normalizedAttendance.map(
-  (item: any) => {
-    const lookupKeys = [
-      item.user_id,
-      item.student_id,
-      item.student_number,
-      item.email,
-    ]
-      .filter(Boolean)
-      .map((value: any) => String(value));
-
-    let profile = null;
-
-    for (const key of lookupKeys) {
-      if (userMap[key]) {
-        profile = userMap[key];
-        break;
-      }
-
-      // Try email case-insensitively
-      if (key.includes('@')) {
-        const emailKey = key.toLowerCase();
-
-        if (userMap[emailKey]) {
-          profile = userMap[emailKey];
-          break;
-        }
-      }
-    }
-
-    return {
-      ...item,
-
-      // Normalize checkout field names
-      check_out_time:
-        item.check_out_time ||
-        item.checkout_time ||
-        item.check_out_at ||
-        null,
-
-      profiles: profile,
-    };
-  }
-);
-
-setAttendees(mappedData);
-return mappedData;
+      console.log(
+        '===================================================='
+      );
 
       setAttendees(mappedData);
       return mappedData;
@@ -488,6 +748,61 @@ return mappedData;
       setLoadingAttendees(false);
     }
   };
+
+  // ============================================================
+  // FORMAT SESSION DETAILS
+  // ============================================================
+  const formatSessionDetails = (item: any) => {
+    const rows =
+      item.session_attendance || [];
+
+    if (!rows.length) {
+      return {
+        checkIn: item.check_in_time
+          ? new Date(
+              item.check_in_time
+            ).toLocaleString()
+          : 'NO CHECK-IN',
+        checkOut: item.check_out_time
+          ? new Date(
+              item.check_out_time
+            ).toLocaleString()
+          : 'NO SIGN-OUT',
+      };
+    }
+
+    const checkIn = rows
+      .map((session: any) => {
+        const value =
+          session.check_in_time
+            ? new Date(
+                session.check_in_time
+              ).toLocaleString()
+            : 'NO CHECK-IN';
+
+        return `${session.session_name}: ${value}`;
+      })
+      .join(' | ');
+
+    const checkOut = rows
+      .map((session: any) => {
+        const value =
+          session.check_out_time
+            ? new Date(
+                session.check_out_time
+              ).toLocaleString()
+            : 'NO SIGN-OUT';
+
+        return `${session.session_name}: ${value}`;
+      })
+      .join(' | ');
+
+    return {
+      checkIn,
+      checkOut,
+    };
+  };
+
 
   // ============================================================
   // OPEN EVENT DETAILS
@@ -506,11 +821,9 @@ return mappedData;
 //
 // Every student who checked in is included.
 //
-// If check_out_time exists:
-//     Present / Complete
-//
-// If check_out_time is NULL:
-//     No Sign-Out
+// Overall status is based on ALL required sessions.
+// A Full Day student is complete only after every session
+// has both check-in and check-out.
 // ============================================================
 
 const handleExportCSV = async () => {
@@ -532,9 +845,6 @@ const handleExportCSV = async () => {
   const headers = [
     'Student Name',
     'ID / Email',
-    'Year Level',
-    'Program',
-    'Section',
     'Status',
     'Check-in Time',
     'Check-out Time',
@@ -569,36 +879,22 @@ const handleExportCSV = async () => {
     // STATUS
     // --------------------------------------------------------
 
-    const yearLevel = student.year_level || 'N/A';
-    const program = student.program || student.course || 'N/A';
-    const section = student.section || 'N/A';
-
     const finalStatus =
-      item.check_out_time
-        ? 'Present / Complete'
-        : 'No Sign-Out';
+      item.attendance_status ||
+      'PENDING';
+
+    const sessionDetails =
+      formatSessionDetails(item);
 
     // --------------------------------------------------------
-    // CHECK-IN
+    // CHECK-IN / CHECK-OUT
     // --------------------------------------------------------
 
     const checkInTime =
-      item.check_in_time
-        ? new Date(
-            item.check_in_time
-          ).toLocaleString()
-        : 'NO CHECK-IN';
-
-    // --------------------------------------------------------
-    // CHECK-OUT
-    // --------------------------------------------------------
+      sessionDetails.checkIn;
 
     const checkOutTime =
-      item.check_out_time
-        ? new Date(
-            item.check_out_time
-          ).toLocaleString()
-        : 'NO SIGN-OUT';
+      sessionDetails.checkOut;
 
     // --------------------------------------------------------
     // ESCAPE CSV VALUES
@@ -616,15 +912,6 @@ const handleExportCSV = async () => {
         '""'
       )}"`;
 
-    const csvYearLevel =
-      `"${String(yearLevel).replace(/"/g, '""')}"`;
-
-    const csvProgram =
-      `"${String(program).replace(/"/g, '""')}"`;
-
-    const csvSection =
-      `"${String(section).replace(/"/g, '""')}"`;
-
     const csvStatus =
       `"${finalStatus}"`;
 
@@ -637,9 +924,6 @@ const handleExportCSV = async () => {
     return [
       csvName,
       csvIdentifier,
-      csvYearLevel,
-      csvProgram,
-      csvSection,
       csvStatus,
       csvCheckIn,
       csvCheckOut,
@@ -714,7 +998,7 @@ const handleExportCSV = async () => {
       return;
     }
 
-    // Always read the database again immediately before printing.
+    // Always refresh immediately before printing so the report uses the latest database state.
     const currentAttendees = await fetchAttendees(selectedEvent);
 
     if (!currentAttendees || currentAttendees.length === 0) {
@@ -734,20 +1018,38 @@ const handleExportCSV = async () => {
         .replace(/'/g, '&#039;');
 
     const formatDateTime = (value: any) => {
-      if (!value) return 'NO SIGN-OUT';
+      if (!value) return '—';
       const date = new Date(value);
       return Number.isNaN(date.getTime())
         ? 'INVALID TIME'
-        : date.toLocaleString();
+        : date.toLocaleString([], {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+          });
     };
 
     const completedCount = currentAttendees.filter(
-      (item: any) => Boolean(item.check_out_time)
+      (item: any) => item.attendance_status === 'COMPLETED'
     ).length;
 
-    const noSignOutCount =
-      currentAttendees.length - completedCount;
+    const noSignOutCount = currentAttendees.filter(
+      (item: any) => item.attendance_status === 'NO SIGN-OUT'
+    ).length;
 
+    const incompleteCount = currentAttendees.filter(
+      (item: any) => item.attendance_status === 'INCOMPLETE'
+    ).length;
+
+    const pendingCount = currentAttendees.filter(
+      (item: any) => item.attendance_status === 'PENDING'
+    ).length;
+
+    // One clean row per student. Each required session gets its own small
+    // block instead of putting multiple long strings into one table cell.
     const rows = currentAttendees
       .map((item: any, index: number) => {
         const student = item.profiles || item;
@@ -765,22 +1067,69 @@ const handleExportCSV = async () => {
           item.user_id ||
           'N/A';
 
-        const yearLevel = student.year_level || 'N/A';
-        const program = student.program || student.course || 'N/A';
-        const section = student.section || 'N/A';
+        const status = item.attendance_status || 'PENDING';
+        const statusClass =
+          status === 'COMPLETED'
+            ? 'status-completed'
+            : status === 'NO SIGN-OUT'
+            ? 'status-nosignout'
+            : status === 'INCOMPLETE'
+            ? 'status-incomplete'
+            : 'status-pending';
 
-        const checkIn = item.check_in_time
-          ? formatDateTime(item.check_in_time)
-          : 'NO CHECK-IN';
+        const sessions = Array.isArray(item.session_attendance)
+          ? item.session_attendance
+          : [];
 
-        const checkOut = item.check_out_time
-          ? formatDateTime(item.check_out_time)
-          : 'NO SIGN-OUT';
+        const sessionHtml = sessions.length
+          ? sessions
+              .map((session: any) => {
+                const hasCheckIn = Boolean(session.check_in_time);
+                const hasCheckOut = Boolean(session.check_out_time);
+                const sessionState =
+                  hasCheckIn && hasCheckOut
+                    ? 'Complete'
+                    : hasCheckIn
+                    ? 'No Sign-Out'
+                    : 'No Attendance';
 
-        const completed = Boolean(item.check_out_time);
-        const status = completed
-          ? 'COMPLETED'
-          : 'NO SIGN-OUT';
+                const sessionStateClass =
+                  hasCheckIn && hasCheckOut
+                    ? 'session-complete'
+                    : hasCheckIn
+                    ? 'session-nosignout'
+                    : 'session-missing';
+
+                return `
+                  <div class="session-card">
+                    <div class="session-header">
+                      <strong>${html(session.session_name || 'Session')}</strong>
+                      <span class="session-state ${sessionStateClass}">${html(sessionState)}</span>
+                    </div>
+                    <div class="session-times">
+                      <div class="time-item">
+                        <span class="time-label">CHECK-IN</span>
+                        <span class="time-value ${hasCheckIn ? '' : 'muted'}">
+                          ${html(formatDateTime(session.check_in_time))}
+                        </span>
+                      </div>
+                      <div class="time-item">
+                        <span class="time-label">CHECK-OUT</span>
+                        <span class="time-value ${hasCheckOut ? 'checkout-ok' : 'checkout-missing'}">
+                          ${html(formatDateTime(session.check_out_time))}
+                        </span>
+                      </div>
+                    </div>
+                  </div>`;
+              })
+              .join('')
+          : `
+              <div class="session-card">
+                <div class="session-header">
+                  <strong>Attendance</strong>
+                  <span class="session-state session-missing">No Attendance</span>
+                </div>
+              </div>`;
 
         return `
           <tr>
@@ -788,16 +1137,12 @@ const handleExportCSV = async () => {
             <td class="student">
               <strong>${html(name)}</strong>
               <span>${html(identifier)}</span>
-              <span>${html(yearLevel)} • ${html(program)} • ${html(section)}</span>
             </td>
-            <td>
-              <span class="status ${completed ? 'completed' : 'missing'}">
-                ${html(status)}
-              </span>
+            <td class="status-cell">
+              <span class="status ${statusClass}">${html(status)}</span>
             </td>
-            <td>${html(checkIn)}</td>
-            <td class="${completed ? 'checkout-complete' : 'checkout-missing'}">
-              ${html(checkOut)}
+            <td class="sessions-cell">
+              <div class="sessions-list">${sessionHtml}</div>
             </td>
           </tr>`;
       })
@@ -806,7 +1151,7 @@ const handleExportCSV = async () => {
     const printWindow = window.open(
       '',
       '_blank',
-      'width=1200,height=900'
+      'width=1400,height=950'
     );
 
     if (!printWindow) {
@@ -824,117 +1169,282 @@ const handleExportCSV = async () => {
   <title>${html(selectedEvent?.title || 'Attendance Report')}</title>
   <style>
     * { box-sizing: border-box; }
+
     body {
       font-family: Arial, Helvetica, sans-serif;
       margin: 0;
-      padding: 32px;
+      padding: 28px;
       color: #172033;
       background: #ffffff;
     }
+
     .report {
-      max-width: 1100px;
+      max-width: 1250px;
       margin: 0 auto;
     }
+
     .top {
       display: flex;
       justify-content: space-between;
-      gap: 24px;
+      align-items: flex-start;
+      gap: 30px;
       border-bottom: 3px solid #172033;
-      padding-bottom: 18px;
-      margin-bottom: 18px;
+      padding-bottom: 16px;
+      margin-bottom: 16px;
     }
+
     h1 {
       margin: 0;
-      font-size: 26px;
+      font-size: 25px;
       line-height: 1.2;
     }
+
     .subtitle {
       margin-top: 5px;
       color: #64748b;
       font-size: 13px;
     }
+
     .meta {
       text-align: right;
-      font-size: 12px;
+      font-size: 11px;
       color: #475569;
-      line-height: 1.6;
+      line-height: 1.7;
+      white-space: nowrap;
     }
+
     .summary {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin: 18px 0;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 9px;
+      margin: 14px 0 18px;
     }
+
     .summary-card {
       border: 1px solid #dbe2ea;
       border-radius: 8px;
-      padding: 10px 12px;
+      padding: 9px 11px;
       background: #f8fafc;
     }
+
     .summary-label {
-      font-size: 10px;
+      font-size: 9px;
       text-transform: uppercase;
       letter-spacing: .06em;
       color: #64748b;
     }
+
     .summary-value {
-      margin-top: 3px;
+      margin-top: 2px;
       font-size: 18px;
       font-weight: 700;
       color: #172033;
     }
+
     table {
       width: 100%;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
       table-layout: fixed;
-      margin-top: 14px;
+      margin-top: 4px;
+      border: 1px solid #dbe2ea;
+      border-radius: 8px;
+      overflow: hidden;
     }
+
     th {
       background: #172033;
       color: #ffffff;
-      padding: 10px 9px;
-      border: 1px solid #172033;
+      padding: 10px 10px;
+      border-right: 1px solid #334155;
       text-align: left;
-      font-size: 11px;
+      font-size: 10px;
       text-transform: uppercase;
-      letter-spacing: .03em;
+      letter-spacing: .04em;
     }
+
+    th:last-child { border-right: none; }
+
     td {
-      padding: 10px 9px;
-      border: 1px solid #dbe2ea;
-      font-size: 11px;
-      vertical-align: middle;
-      overflow-wrap: anywhere;
+      padding: 10px;
+      border-top: 1px solid #dbe2ea;
+      border-right: 1px solid #dbe2ea;
+      font-size: 10px;
+      vertical-align: top;
+      background: #ffffff;
     }
-    tbody tr:nth-child(even) { background: #f8fafc; }
-    .number { width: 5%; text-align: center; color: #64748b; }
-    .student { width: 27%; }
-    .student strong { display: block; font-size: 12px; }
-    .student span { display: block; margin-top: 2px; color: #64748b; font-size: 10px; }
+
+    td:last-child { border-right: none; }
+    tbody tr:nth-child(even) td { background: #f8fafc; }
+
+    .number {
+      width: 4%;
+      text-align: center;
+      color: #64748b;
+      vertical-align: middle;
+    }
+
+    .student {
+      width: 20%;
+      vertical-align: middle;
+    }
+
+    .student strong {
+      display: block;
+      font-size: 12px;
+      color: #172033;
+    }
+
+    .student span {
+      display: block;
+      margin-top: 3px;
+      color: #64748b;
+      font-size: 9px;
+    }
+
+    .status-cell {
+      width: 12%;
+      vertical-align: middle;
+    }
+
+    .sessions-cell { width: 64%; }
+
     .status {
       display: inline-block;
-      padding: 4px 7px;
+      padding: 5px 8px;
       border-radius: 999px;
       font-size: 9px;
       font-weight: 700;
       letter-spacing: .02em;
+      white-space: nowrap;
     }
-    .completed { color: #166534; background: #dcfce7; }
-    .missing { color: #b91c1c; background: #fee2e2; }
-    .checkout-complete { color: #166534; font-weight: 600; }
-    .checkout-missing { color: #b91c1c; font-weight: 600; }
+
+    .status-completed {
+      color: #166534;
+      background: #dcfce7;
+      border: 1px solid #bbf7d0;
+    }
+
+    .status-nosignout {
+      color: #b91c1c;
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+    }
+
+    .status-incomplete {
+      color: #9a3412;
+      background: #ffedd5;
+      border: 1px solid #fed7aa;
+    }
+
+    .status-pending {
+      color: #475569;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+    }
+
+    .sessions-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .session-card {
+      border: 1px solid #dbe2ea;
+      border-radius: 7px;
+      padding: 8px;
+      background: #f8fafc;
+      page-break-inside: avoid;
+    }
+
+    .session-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-bottom: 6px;
+      margin-bottom: 6px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .session-header strong {
+      font-size: 10px;
+      color: #172033;
+    }
+
+    .session-state {
+      display: inline-block;
+      padding: 2px 5px;
+      border-radius: 999px;
+      font-size: 7px;
+      font-weight: 700;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .session-complete {
+      color: #166534;
+      background: #dcfce7;
+    }
+
+    .session-nosignout {
+      color: #b91c1c;
+      background: #fee2e2;
+    }
+
+    .session-missing {
+      color: #9a3412;
+      background: #ffedd5;
+    }
+
+    .session-times {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+
+    .time-item {
+      min-width: 0;
+    }
+
+    .time-label {
+      display: block;
+      color: #64748b;
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      margin-bottom: 2px;
+    }
+
+    .time-value {
+      display: block;
+      color: #334155;
+      font-size: 8.5px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .muted { color: #94a3b8; }
+    .checkout-ok { color: #166534; font-weight: 700; }
+    .checkout-missing { color: #b91c1c; font-weight: 700; }
+
     .legend {
-      margin-top: 18px;
-      padding-top: 12px;
+      margin-top: 14px;
+      padding-top: 10px;
       border-top: 1px solid #dbe2ea;
       color: #64748b;
-      font-size: 10px;
+      font-size: 9px;
       line-height: 1.6;
     }
+
+    .legend strong { color: #334155; }
+
     @media print {
       body { padding: 0; }
       .report { max-width: none; }
-      @page { size: A4 landscape; margin: 10mm; }
+      @page { size: A4 landscape; margin: 9mm; }
+      thead { display: table-header-group; }
+      tr { page-break-inside: avoid; }
     }
   </style>
 </head>
@@ -965,24 +1475,39 @@ const handleExportCSV = async () => {
         <div class="summary-label">No Sign-Out</div>
         <div class="summary-value">${noSignOutCount}</div>
       </div>
+      <div class="summary-card">
+        <div class="summary-label">Incomplete</div>
+        <div class="summary-value">${incompleteCount}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Pending</div>
+        <div class="summary-value">${pendingCount}</div>
+      </div>
     </div>
 
     <table>
+      <colgroup>
+        <col style="width:4%" />
+        <col style="width:20%" />
+        <col style="width:12%" />
+        <col style="width:64%" />
+      </colgroup>
       <thead>
         <tr>
-          <th class="number">#</th>
-          <th class="student">Student / Academic Info</th>
+          <th>#</th>
+          <th>Student</th>
           <th>Status</th>
-          <th>Check-in Time</th>
-          <th>Check-out Time</th>
+          <th>Session Attendance</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
 
     <div class="legend">
-      <strong>COMPLETED</strong> = student has a check-in and a recorded check-out.<br />
-      <strong>NO SIGN-OUT</strong> = student has checked in but no check-out is recorded in the database at the time this report was generated.
+      <strong>COMPLETED</strong> = every required session has both check-in and check-out.<br />
+      <strong>NO SIGN-OUT</strong> = the student checked in, but one or more required sessions has no checkout.<br />
+      <strong>INCOMPLETE</strong> = a required session has already finished but the student has no attendance record for it.<br />
+      <strong>PENDING</strong> = a required session has not happened yet.
     </div>
   </div>
 
@@ -1270,11 +1795,12 @@ const handleExportCSV = async () => {
           session_date: eventDate,
           attendance_start: formattedCheckInStart,
           attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckOutEnd,
+          cutoff_time: formattedCheckInEnd,
           checkout_start: formattedCheckOutStart,
           checkout_end: formattedCheckOutEnd,
         });
       }
+
       if (
         sessionType === 'afternoon' ||
         sessionType === 'full'
@@ -1285,7 +1811,7 @@ const handleExportCSV = async () => {
           session_date: eventDate,
           attendance_start: formattedCheckInStart,
           attendance_end: formattedCheckInEnd,
-          cutoff_time: formattedCheckOutEnd,
+          cutoff_time: formattedCheckInEnd,
           checkout_start: formattedCheckOutStart,
           checkout_end: formattedCheckOutEnd,
         });
@@ -1839,7 +2365,7 @@ const handleExportCSV = async () => {
                               {session.cutoff_time && (
                                 <p className="text-xs text-amber-400 whitespace-nowrap">
                                   <span className="text-slate-500">Cutoff:</span>{' '}
-                                  {formatTime12Hour(session.cutoff_time)}
+                                  {formatTime12Hour(session.checkout_end)}
                                 </p>
                               )}
                             </div>
@@ -1859,7 +2385,7 @@ const handleExportCSV = async () => {
                         Attendance Records
                       </h4>
                       <p className="text-[11px] text-slate-500 mt-1">
-                        Each student is evaluated using the latest checkout record.
+                        Each student is evaluated across every required attendance session.
                       </p>
                     </div>
 
@@ -1883,23 +2409,34 @@ const handleExportCSV = async () => {
                   ) : (
                     <div className="space-y-3">
                       {attendees.map((item: any, idx: number) => {
-                        const student = item.profiles || item;
-                        const checkIn = item.check_in_time
-                          ? new Date(item.check_in_time).toLocaleString()
-                          : 'NO CHECK-IN';
-                        const checkOut = item.check_out_time
-                          ? new Date(item.check_out_time).toLocaleString()
-                          : 'NO SIGN-OUT';
-                        const completed = Boolean(item.check_out_time);
+                        const student =
+                          item.profiles || item;
+
+                        const status =
+                          item.attendance_status ||
+                          'PENDING';
+
+                        const completed =
+                          status === 'COMPLETED';
+
+                        const statusClass =
+                          completed
+                            ? 'bg-emerald-500/5 border-emerald-500/20'
+                            : status === 'PENDING'
+                            ? 'bg-slate-500/5 border-slate-700'
+                            : 'bg-rose-500/5 border-rose-500/20';
+
+                        const badgeClass =
+                          completed
+                            ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                            : status === 'PENDING'
+                            ? 'bg-slate-500/10 text-slate-300 border-slate-600'
+                            : 'bg-rose-500/10 text-rose-300 border-rose-500/20';
 
                         return (
                           <div
                             key={item.id || idx}
-                            className={`rounded-xl border p-4 ${
-                              completed
-                                ? 'bg-emerald-500/5 border-emerald-500/20'
-                                : 'bg-rose-500/5 border-rose-500/20'
-                            }`}
+                            className={`rounded-xl border p-4 ${statusClass}`}
                           >
                             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                               <div className="min-w-0">
@@ -1909,6 +2446,7 @@ const handleExportCSV = async () => {
                                     student.name ||
                                     'Student Attendee'}
                                 </p>
+
                                 <p className="text-xs text-slate-400 mt-0.5 break-all">
                                   {student.student_id ||
                                     student.student_number ||
@@ -1916,63 +2454,97 @@ const handleExportCSV = async () => {
                                     item.user_id ||
                                     'Registered Student'}
                                 </p>
-
-                                {(student.year_level || student.program || student.section) && (
-                                  <div className="flex flex-wrap gap-1.5 mt-2">
-                                    {student.year_level && (
-                                      <span className="text-[10px] px-2 py-1 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-                                        {student.year_level}
-                                      </span>
-                                    )}
-                                    {student.program && (
-                                      <span className="text-[10px] px-2 py-1 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                                        {student.program}
-                                      </span>
-                                    )}
-                                    {student.section && (
-                                      <span className="text-[10px] px-2 py-1 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                                        {student.section}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
                               </div>
 
                               <span
-                                className={`self-start text-[11px] px-2.5 py-1 rounded-full font-bold border shrink-0 ${
-                                  completed
-                                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
-                                    : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
-                                }`}
+                                className={`self-start text-[11px] px-2.5 py-1 rounded-full font-bold border shrink-0 ${badgeClass}`}
                               >
-                                {completed ? 'COMPLETED' : 'NO SIGN-OUT'}
+                                {status}
                               </span>
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
-                              <div className="bg-slate-950/70 rounded-lg px-3 py-2 border border-slate-800">
-                                <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                                  Check-in
-                                </p>
-                                <p className="text-xs text-slate-200 mt-0.5 break-words">
-                                  {checkIn}
-                                </p>
-                              </div>
+                            <div className="space-y-2 mt-3">
+                              {(item.session_attendance || []).map(
+                                (sessionRow: any) => {
+                                  const sessionComplete =
+                                    Boolean(
+                                      sessionRow.check_in_time
+                                    ) &&
+                                    Boolean(
+                                      sessionRow.check_out_time
+                                    );
 
-                              <div className="bg-slate-950/70 rounded-lg px-3 py-2 border border-slate-800">
-                                <p className="text-[10px] uppercase tracking-wide text-slate-500">
-                                  Check-out
-                                </p>
-                                <p
-                                  className={`text-xs mt-0.5 break-words ${
-                                    completed
-                                      ? 'text-emerald-300'
-                                      : 'text-rose-300'
-                                  }`}
-                                >
-                                  {checkOut}
-                                </p>
-                              </div>
+                                  const sessionHasCheckIn =
+                                    Boolean(
+                                      sessionRow.check_in_time
+                                    );
+
+                                  return (
+                                    <div
+                                      key={
+                                        sessionRow.session_id
+                                      }
+                                      className="bg-slate-950/70 rounded-lg p-3 border border-slate-800"
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <p className="text-xs font-semibold text-white">
+                                          {sessionRow.session_name}
+                                        </p>
+
+                                        <span
+                                          className={`text-[9px] px-2 py-0.5 rounded-full border font-bold ${
+                                            sessionComplete
+                                              ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
+                                              : sessionHasCheckIn
+                                              ? 'text-rose-300 bg-rose-500/10 border-rose-500/20'
+                                              : 'text-slate-300 bg-slate-500/10 border-slate-600'
+                                          }`}
+                                        >
+                                          {sessionComplete
+                                            ? 'COMPLETE'
+                                            : sessionHasCheckIn
+                                            ? 'NO SIGN-OUT'
+                                            : 'NO ATTENDANCE'}
+                                        </span>
+                                      </div>
+
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                                        <div>
+                                          <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                                            Check-in
+                                          </p>
+                                          <p className="text-xs text-slate-200 mt-0.5 break-words">
+                                            {sessionRow.check_in_time
+                                              ? new Date(
+                                                  sessionRow.check_in_time
+                                                ).toLocaleString()
+                                              : 'NO CHECK-IN'}
+                                          </p>
+                                        </div>
+
+                                        <div>
+                                          <p className="text-[10px] uppercase tracking-wide text-slate-500">
+                                            Check-out
+                                          </p>
+                                          <p
+                                            className={`text-xs mt-0.5 break-words ${
+                                              sessionRow.check_out_time
+                                                ? 'text-emerald-300'
+                                                : 'text-rose-300'
+                                            }`}
+                                          >
+                                            {sessionRow.check_out_time
+                                              ? new Date(
+                                                  sessionRow.check_out_time
+                                                ).toLocaleString()
+                                              : 'NO SIGN-OUT'}
+                                          </p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                }
+                              )}
                             </div>
                           </div>
                         );
@@ -1991,10 +2563,16 @@ const handleExportCSV = async () => {
                   <strong className="text-white ml-1">{attendees.length}</strong>
                 </span>
                 <span className="text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded-full">
-                  Completed: {attendees.filter((item: any) => Boolean(item.check_out_time)).length}
+                  Completed: {attendees.filter((item: any) => item.attendance_status === 'COMPLETED').length}
                 </span>
                 <span className="text-rose-300 bg-rose-500/10 border border-rose-500/20 px-2 py-1 rounded-full">
-                  No Sign-Out: {attendees.filter((item: any) => !item.check_out_time).length}
+                  No Sign-Out: {attendees.filter((item: any) => item.attendance_status === 'NO SIGN-OUT').length}
+                </span>
+                <span className="text-rose-300 bg-rose-500/10 border border-rose-500/20 px-2 py-1 rounded-full">
+                  Incomplete: {attendees.filter((item: any) => item.attendance_status === 'INCOMPLETE').length}
+                </span>
+                <span className="text-slate-300 bg-slate-500/10 border border-slate-600 px-2 py-1 rounded-full">
+                  Pending: {attendees.filter((item: any) => item.attendance_status === 'PENDING').length}
                 </span>
               </div>
 
