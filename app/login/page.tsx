@@ -479,6 +479,16 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {/* FOOTER CREDIT */}
+        <div className="mt-5 text-center">
+          <p className="text-xs text-slate-500">
+            © 2026 Campus Check-In Portal
+          </p>
+          <p className="text-xs text-slate-500 mt-2">
+            Developed by <span className="text-slate-400">Christian Rey Wata</span>
+          </p>
+        </div>
+
       </div>
     </div>
   );
