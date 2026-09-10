@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { LogIn, UserPlus } from 'lucide-react';
+import { Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 
 export default function AuthPage() {
   const router = useRouter();
@@ -13,6 +13,7 @@ export default function AuthPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [fullName, setFullName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
 
@@ -338,10 +339,6 @@ export default function AuthPage() {
                   <option value="4th Year">
                     4th Year
                   </option>
-
-                  <option value="5th Year">
-                    5th Year
-                  </option>
                 </select>
               </div>
 
@@ -417,19 +414,35 @@ export default function AuthPage() {
               Password
             </label>
 
-            <input
-              type="password"
-              required
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) =>
-                setPassword(
-                  e.target.value
-                )
-              }
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) =>
+                  setPassword(
+                    e.target.value
+                  )
+                }
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-4 pr-11 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
+              />
+
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? (
+                  <EyeOff className="w-5 h-5" />
+                ) : (
+                  <Eye className="w-5 h-5" />
+                )}
+              </button>
+            </div>
           </div>
+
 
           {/* ==========================================================
               SUBMIT BUTTON
