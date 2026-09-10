@@ -3,21 +3,21 @@
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { LogIn, UserPlus } from 'lucide-react';
+import { Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 
-export default function LoginPage() {
+export default function AuthPage() {
   const router = useRouter();
 
   const [isSignUp, setIsSignUp] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Account information
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
-  // Student information
+  const [showPassword, setShowPassword] = useState(false);
   const [fullName, setFullName] = useState('');
   const [studentNumber, setStudentNumber] = useState('');
+
+  // Student information
   const [yearLevel, setYearLevel] = useState('');
   const [program, setProgram] = useState('');
   const [section, setSection] = useState('');
@@ -32,29 +32,28 @@ export default function LoginPage() {
         // 1. VALIDATE STUDENT INFORMATION
         // ============================================================
 
-        const cleanId = studentNumber.trim();
-        const cleanName = fullName.trim();
-        const cleanProgram = program.trim();
-        const cleanSection = section.trim();
-
-        if (!cleanName) {
-          throw new Error('Please enter your full name.');
-        }
-
-        if (!cleanId) {
-          throw new Error('Please enter your Student ID number.');
+        if (!studentNumber.trim()) {
+          throw new Error(
+            'Please enter your Student ID number to register.'
+          );
         }
 
         if (!yearLevel) {
-          throw new Error('Please select your Year Level.');
+          throw new Error(
+            'Please select your Year Level.'
+          );
         }
 
-        if (!cleanProgram) {
-          throw new Error('Please enter your Program / Course.');
+        if (!program.trim()) {
+          throw new Error(
+            'Please enter your Program.'
+          );
         }
 
-        if (!cleanSection) {
-          throw new Error('Please enter your Section.');
+        if (!section.trim()) {
+          throw new Error(
+            'Please enter your Section.'
+          );
         }
 
         // ============================================================
@@ -67,35 +66,35 @@ export default function LoginPage() {
         } = await supabase
           .from('allowed_students')
           .select('student_id')
-          .eq('student_id', cleanId)
+          .eq('student_id', studentNumber.trim())
           .maybeSingle();
 
         if (whitelistError) {
           console.error(
-            'Whitelist error:',
+            'Whitelist query error:',
             whitelistError
           );
 
           throw new Error(
-            'Database error verifying Student ID.'
+            'Unable to verify Student ID. Please try again.'
           );
         }
 
         if (!allowedStudent) {
           throw new Error(
-            `🚫 REGISTRATION BLOCKED: Student ID "${cleanId}" is not whitelisted. Please contact an administrator.`
+            'Your Student ID is not whitelisted or authorized to register. Please contact an admin.'
           );
         }
 
         // ============================================================
-        // 3. CREATE SUPABASE AUTH USER
+        // 3. CREATE SUPABASE AUTH ACCOUNT
         // ============================================================
 
         const {
           data: authData,
           error: authError,
         } = await supabase.auth.signUp({
-          email: email.trim(),
+          email,
           password,
         });
 
@@ -104,7 +103,7 @@ export default function LoginPage() {
         }
 
         // ============================================================
-        // 4. SAVE STUDENT PROFILE
+        // 4. INSERT STUDENT PROFILE INTO USERS TABLE
         // ============================================================
 
         if (authData.user) {
@@ -115,21 +114,27 @@ export default function LoginPage() {
             .insert([
               {
                 id: authData.user.id,
-                full_name: cleanName,
-                student_number: cleanId,
+
+                full_name: fullName.trim(),
+
+                student_number: studentNumber.trim(),
+
                 email: email.trim(),
+
                 role: 'student',
 
-                // STUDENT INFORMATION
+                // NEW STUDENT INFORMATION
                 year_level: yearLevel,
-                program: cleanProgram,
-                section: cleanSection,
+
+                program: program.trim(),
+
+                section: section.trim(),
               },
             ]);
 
           if (profileError) {
             console.error(
-              'Profile error:',
+              'Profile insert error:',
               profileError
             );
 
@@ -153,14 +158,14 @@ export default function LoginPage() {
         }
       } else {
         // ============================================================
-        // LOGIN
+        // LOGIN FLOW
         // ============================================================
 
         const {
           data,
           error,
         } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
+          email,
           password,
         });
 
@@ -169,7 +174,7 @@ export default function LoginPage() {
         }
 
         // ============================================================
-        // GET USER ROLE
+        // FETCH USER ROLE
         // ============================================================
 
         const {
@@ -183,13 +188,13 @@ export default function LoginPage() {
 
         if (profileError) {
           console.error(
-            'Profile query error:',
+            'User profile query error:',
             profileError
           );
         }
 
         // ============================================================
-        // REDIRECT
+        // REDIRECT BASED ON ROLE
         // ============================================================
 
         if (
@@ -218,7 +223,6 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-6">
-
       <div className="bg-slate-800 border border-slate-700 p-8 rounded-2xl w-full max-w-md shadow-2xl">
 
         {/* ============================================================
@@ -226,15 +230,12 @@ export default function LoginPage() {
         ============================================================ */}
 
         <div className="text-center mb-8">
-
           <div className="inline-flex bg-indigo-600/20 p-3 rounded-full text-indigo-400 mb-3 border border-indigo-500/30">
-
             {isSignUp ? (
               <UserPlus className="w-8 h-8" />
             ) : (
               <LogIn className="w-8 h-8" />
             )}
-
           </div>
 
           <h1 className="text-2xl font-bold">
@@ -248,7 +249,6 @@ export default function LoginPage() {
               ? 'Register to create your account'
               : 'Sign in to access your dashboard'}
           </p>
-
         </div>
 
         {/* ============================================================
@@ -261,15 +261,13 @@ export default function LoginPage() {
         >
 
           {/* ==========================================================
-              SIGN UP FIELDS
+              SIGN UP ONLY FIELDS
           ========================================================== */}
 
           {isSignUp && (
             <>
-
               {/* FULL NAME */}
               <div>
-
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Full Name
                 </label>
@@ -284,12 +282,10 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
-
               </div>
 
               {/* STUDENT NUMBER */}
               <div>
-
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Student / ID Number
                 </label>
@@ -306,12 +302,10 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
-
               </div>
 
               {/* YEAR LEVEL */}
               <div>
-
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Year Level
                 </label>
@@ -326,7 +320,6 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 >
-
                   <option value="">
                     Select Year Level
                   </option>
@@ -346,18 +339,11 @@ export default function LoginPage() {
                   <option value="4th Year">
                     4th Year
                   </option>
-
-                  <option value="5th Year">
-                    5th Year
-                  </option>
-
                 </select>
-
               </div>
 
               {/* PROGRAM */}
               <div>
-
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Program / Course
                 </label>
@@ -374,12 +360,10 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
-
               </div>
 
               {/* SECTION */}
               <div>
-
                 <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
                   Section
                 </label>
@@ -396,9 +380,7 @@ export default function LoginPage() {
                   }
                   className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
                 />
-
               </div>
-
             </>
           )}
 
@@ -407,7 +389,6 @@ export default function LoginPage() {
           ========================================================== */}
 
           <div>
-
             <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
               Email Address
             </label>
@@ -422,7 +403,6 @@ export default function LoginPage() {
               }
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
             />
-
           </div>
 
           {/* ==========================================================
@@ -430,28 +410,42 @@ export default function LoginPage() {
           ========================================================== */}
 
           <div>
-
             <label className="block text-xs uppercase tracking-wider text-slate-400 mb-1">
               Password
             </label>
 
-            <input
-              type="password"
-              required
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) =>
-                setPassword(
-                  e.target.value
-                )
-              }
-              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) =>
+                  setPassword(
+                    e.target.value
+                  )
+                }
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-4 pr-11 py-2.5 text-white focus:outline-none focus:border-indigo-500 text-sm"
+              />
 
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition"
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? (
+                  <EyeOff className="w-5 h-5" />
+                ) : (
+                  <Eye className="w-5 h-5" />
+                )}
+              </button>
+            </div>
           </div>
 
+
           {/* ==========================================================
-              SUBMIT
+              SUBMIT BUTTON
           ========================================================== */}
 
           <button
@@ -465,15 +459,13 @@ export default function LoginPage() {
               ? 'Register Account'
               : 'Sign In'}
           </button>
-
         </form>
 
         {/* ============================================================
-            SWITCH LOGIN / SIGN UP
+            SWITCH LOGIN / REGISTER
         ============================================================ */}
 
         <div className="mt-6 pt-6 border-t border-slate-700/50 text-center">
-
           <button
             type="button"
             onClick={() =>
@@ -485,30 +477,9 @@ export default function LoginPage() {
               ? 'Already have an account? Sign In'
               : "Don't have an account? Sign Up"}
           </button>
-
-        </div>
-
-        {/* ============================================================
-            SYSTEM CREDIT
-        ============================================================ */}
-
-        <div className="mt-5 text-center">
-
-          <p className="text-[11px] text-slate-500">
-            © 2026 Campus Check-In Portal
-          </p>
-
-          <p className="text-[11px] text-slate-500 mt-1">
-            Developed by{' '}
-            <span className="font-medium text-slate-400">
-              Christian Rey Wata
-            </span>
-          </p>
-
         </div>
 
       </div>
-
     </div>
   );
 }
