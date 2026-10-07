@@ -80,6 +80,19 @@ export default function ScanPage() {
   const [isScanning, setIsScanning] = useState(false);
 
   // ============================================================
+  // ADMIN DECISION FOR CHECKOUT WITHOUT CHECK-IN
+  // ============================================================
+
+  const [pendingLateCheckout, setPendingLateCheckout] =
+    useState<{
+      user: any;
+      session: any;
+    } | null>(null);
+
+  const [lateDecisionLoading, setLateDecisionLoading] =
+    useState(false);
+
+  // ============================================================
   // LIVE REFS FOR SCANNER CALLBACKS
   // ============================================================
 
@@ -301,57 +314,32 @@ console.table(
   };
 
   // ============================================================
-  // AUTOMATIC MORNING / AFTERNOON SESSION SWITCH
+  // LIVE SESSION CONTROL REFRESH
   //
-  // The scanner checks every 15 seconds so a FULL DAY event can
-  // move from Morning to Afternoon without reloading the page.
+  // Admin can open/close a session from the dashboard while the
+  // scanner is already open. Refresh the session flags regularly.
   // ============================================================
 
   useEffect(() => {
-    if (!sessions.length) {
+    if (!selectedEventId) {
       return;
     }
 
-    const updateActiveSessionByTime = () => {
-      const currentSession =
-        getCurrentSession(sessions);
-
-      if (
-        currentSession &&
-        currentSession.id !== selectedSessionId
-      ) {
-        console.log(
-          'AUTO SESSION SWITCH:',
-          currentSession.session_name,
-          currentSession.id
-        );
-
-        setSelectedSessionId(
-          currentSession.id
-        );
-
-        activeSessionRef.current =
-          currentSession;
-
-        setActiveSession(
-          currentSession
-        );
-
-        setScanResult(null);
-      }
+    const refreshSessionControls = async () => {
+      await fetchSessions(selectedEventId);
     };
 
-    updateActiveSessionByTime();
+    refreshSessionControls();
 
     const interval = window.setInterval(
-      updateActiveSessionByTime,
-      15000
+      refreshSessionControls,
+      5000
     );
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [sessions, selectedSessionId]);
+  }, [selectedEventId]);
 
   // ============================================================
   // STOP CAMERA WHEN EVENT CHANGES
@@ -643,13 +631,11 @@ const formatEventDate = (
   };
 
   // ============================================================
-  // ATTENDANCE ACTION WINDOWS
+  // ATTENDANCE ACTION STATUS
   //
-  // CHECK-IN is ONLY allowed during attendance_start -> attendance_end.
-  // CHECK-OUT is ONLY allowed during checkout_start -> checkout_end.
-  // checkout_end is the FINAL CUTOFF for this session.
-  //
-  // There is NO late check-in period between the two windows.
+  // IMPORTANT:
+  // The admin controls are now the authority.
+  // Scheduled times remain reference information only.
   // ============================================================
 
   type SessionActionResult = {
@@ -663,149 +649,44 @@ const formatEventDate = (
     session: any,
     action: 'CHECK_IN' | 'CHECK_OUT' = 'CHECK_IN'
   ): SessionActionResult => {
-    if (!session?.session_date) {
+    if (!session) {
       return {
         allowed: false,
         status: 'CLOSED',
-        label: 'Invalid Session Date',
+        label: 'No session selected',
         badgeStyle:
           'bg-rose-500/10 text-rose-400 border-rose-500/20',
       };
     }
 
-    const attendanceStartRaw =
-      session.attendance_start || session.start_time;
+    const manualControlExists =
+      typeof session.check_in_open === 'boolean' ||
+      typeof session.check_out_open === 'boolean';
 
-    const attendanceEndRaw =
-      session.attendance_end || session.end_time;
-
-    const checkoutStartRaw =
-      session.checkout_start ??
-      session.check_out_start;
-
-    const checkoutEndRaw =
-      session.checkout_end ??
-      session.check_out_end ??
-      session.cutoff_time ??
-      attendanceEndRaw;
-
-    if (
-      !attendanceStartRaw ||
-      !attendanceEndRaw ||
-      !checkoutStartRaw ||
-      !checkoutEndRaw
-    ) {
-      console.error(
-        'Session is missing required attendance/check-out times:',
-        session
-      );
-
+    if (!manualControlExists) {
       return {
         allowed: false,
         status: 'CLOSED',
-        label: 'Invalid Session Time',
+        label:
+          'Manual session controls are not configured. Update the database first.',
         badgeStyle:
           'bg-rose-500/10 text-rose-400 border-rose-500/20',
       };
     }
 
-    const attendanceStart = createLocalDate(
-      session.session_date,
-      String(attendanceStartRaw).slice(0, 8)
-    );
+    const isOpen =
+      action === 'CHECK_IN'
+        ? session.check_in_open === true
+        : session.check_out_open === true;
 
-    const attendanceEnd = createLocalDate(
-      session.session_date,
-      String(attendanceEndRaw).slice(0, 8)
-    );
-
-    const checkoutStart = createLocalDate(
-      session.session_date,
-      String(checkoutStartRaw).slice(0, 8)
-    );
-
-    const checkoutEnd = createLocalDate(
-      session.session_date,
-      String(checkoutEndRaw).slice(0, 8)
-    );
-
-    const now = new Date();
-
-    console.log('SESSION ACTION CHECK:', {
-      session: session.session_name,
-      action,
-      now: now.toString(),
-      attendanceStart: attendanceStart.toString(),
-      attendanceEnd: attendanceEnd.toString(),
-      checkoutStart: checkoutStart.toString(),
-      checkoutEnd: checkoutEnd.toString(),
-    });
-
-    if (action === 'CHECK_IN') {
-      if (now < attendanceStart) {
-        return {
-          allowed: false,
-          status: 'EARLY',
-          label: `Check-in opens at ${formatTime(attendanceStart)}`,
-          badgeStyle:
-            'bg-slate-500/10 text-slate-400 border-slate-500/20',
-        };
-      }
-
-      if (now >= attendanceStart && now <= attendanceEnd) {
-        return {
-          allowed: true,
-          status: 'PRESENT',
-          label: 'Check-in Open',
-          badgeStyle:
-            'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-        };
-      }
-
-      if (now < checkoutStart) {
-        return {
-          allowed: false,
-          status: 'CLOSED',
-          label: `Check-in closed. Check-out opens at ${formatTime(checkoutStart)}`,
-          badgeStyle:
-            'bg-amber-500/10 text-amber-400 border-amber-500/20',
-        };
-      }
-
-      if (now <= checkoutEnd) {
-        return {
-          allowed: false,
-          status: 'CLOSED',
-          label: `Check-in closed. Check-out is open until ${formatTime(checkoutEnd)}`,
-          badgeStyle:
-            'bg-amber-500/10 text-amber-400 border-amber-500/20',
-        };
-      }
-
-      return {
-        allowed: false,
-        status: 'CLOSED',
-        label: `Attendance closed. Final cutoff was ${formatTime(checkoutEnd)}`,
-        badgeStyle:
-          'bg-rose-500/10 text-rose-400 border-rose-500/20',
-      };
-    }
-
-    if (now < checkoutStart) {
-      return {
-        allowed: false,
-        status: 'EARLY',
-        label: `Check-out opens at ${formatTime(checkoutStart)}`,
-        badgeStyle:
-          'bg-slate-500/10 text-slate-400 border-slate-500/20',
-      };
-    }
-
-    if (now <= checkoutEnd) {
+    if (isOpen) {
       return {
         allowed: true,
         status: 'PRESENT',
-        label: 'Check-out Open',
+        label:
+          action === 'CHECK_IN'
+            ? 'Check-in Open'
+            : 'Check-out Open',
         badgeStyle:
           'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
       };
@@ -814,7 +695,10 @@ const formatEventDate = (
     return {
       allowed: false,
       status: 'CLOSED',
-      label: `Attendance closed. Final cutoff was ${formatTime(checkoutEnd)}`,
+      label:
+        action === 'CHECK_IN'
+          ? 'Check-in Closed by Admin'
+          : 'Check-out Closed by Admin',
       badgeStyle:
         'bg-rose-500/10 text-rose-400 border-rose-500/20',
     };
@@ -823,9 +707,9 @@ const formatEventDate = (
   // ============================================================
   // FIND CURRENT SESSION
   //
-  // FULL DAY events have separate Morning and Afternoon rows.
-  // The scanner automatically switches to whichever session has
-  // an open check-in or check-out window.
+  // A session is active when the admin has opened either control.
+  // If both controls are open, processAttendance decides whether
+  // this particular student should check in or check out.
   // ============================================================
 
   const getCurrentSession = (
@@ -835,113 +719,43 @@ const formatEventDate = (
       return null;
     }
 
-    const now = new Date();
+    const manuallyOpen = sessionList.filter(
+      (session) =>
+        session &&
+        (
+          session.check_in_open === true ||
+          session.check_out_open === true
+        )
+    );
 
-    // Build all sessions that are currently accepting an attendance action.
-    // We deliberately do NOT fall back to an old session here. For a FULL DAY
-    // event, using an old Morning session after its window has closed is what
-    // can cause an Afternoon scan to be treated as a duplicate Morning scan.
-    const activeSessions = sessionList
-      .map((session) => {
-        if (!session?.session_date) {
-          return null;
-        }
-
-        const attendanceStartRaw =
-          session.attendance_start || session.start_time;
-
-        const attendanceEndRaw =
-          session.attendance_end || session.end_time;
-
-        const checkoutStartRaw =
-          session.checkout_start ??
-          session.check_out_start;
-
-        const checkoutEndRaw =
-          session.checkout_end ??
-          session.check_out_end ??
-          session.cutoff_time ??
-          attendanceEndRaw;
-
-        if (
-          !attendanceStartRaw ||
-          !attendanceEndRaw ||
-          !checkoutStartRaw ||
-          !checkoutEndRaw
-        ) {
-          return null;
-        }
-
-        const attendanceStart = createLocalDate(
-          session.session_date,
-          String(attendanceStartRaw).slice(0, 8)
-        );
-
-        const attendanceEnd = createLocalDate(
-          session.session_date,
-          String(attendanceEndRaw).slice(0, 8)
-        );
-
-        const checkoutStart = createLocalDate(
-          session.session_date,
-          String(checkoutStartRaw).slice(0, 8)
-        );
-
-        const checkoutEnd = createLocalDate(
-          session.session_date,
-          String(checkoutEndRaw).slice(0, 8)
-        );
-
-        const isCheckInOpen =
-          now >= attendanceStart &&
-          now <= attendanceEnd;
-
-        const isCheckOutOpen =
-          now >= checkoutStart &&
-          now <= checkoutEnd;
-
-        if (!isCheckInOpen && !isCheckOutOpen) {
-          return null;
-        }
-
-        return {
-          session,
-          attendanceStart,
-          attendanceEnd,
-          checkoutStart,
-          checkoutEnd,
-          isCheckInOpen,
-          isCheckOutOpen,
-        };
-      })
-      .filter(Boolean) as any[];
-
-    if (!activeSessions.length) {
+    if (!manuallyOpen.length) {
       return null;
     }
 
-    // If windows ever overlap, prefer the session that starts latest.
-    // This prevents an older session from winning over the newer session.
-    activeSessions.sort(
+    // Prefer the session currently selected by the admin if it is open.
+    const selectedOpen = manuallyOpen.find(
+      (session) =>
+        String(session.id) === String(selectedSessionId)
+    );
+
+    if (selectedOpen) {
+      return selectedOpen;
+    }
+
+    // Otherwise prefer the latest scheduled session.
+    return [...manuallyOpen].sort(
       (a, b) =>
-        b.attendanceStart.getTime() -
-        a.attendanceStart.getTime()
-    );
-
-    const selected = activeSessions[0];
-
-    console.log(
-      'CURRENT SESSION RESOLVED:',
-      selected.session.session_name,
-      selected.session.id,
-      {
-        now: now.toString(),
-        checkInOpen: selected.isCheckInOpen,
-        checkOutOpen: selected.isCheckOutOpen,
-      }
-    );
-
-    return selected.session;
+        new Date(
+          `${String(b.session_date).slice(0, 10)}T${String(
+            b.attendance_start || '00:00:00'
+          ).slice(0, 8)}`
+        ).getTime() -
+        new Date(
+          `${String(a.session_date).slice(0, 10)}T${String(
+            a.attendance_start || '00:00:00'
+          ).slice(0, 8)}`
+        ).getTime()
+    )[0];
   };
 
   // ============================================================
@@ -1090,6 +904,171 @@ const fallbackStart =
   // This is what keeps Morning and Afternoon completely independent.
   // ============================================================
 
+  // ============================================================
+  // ADMIN DECISIONS FOR CHECKOUT WITHOUT CHECK-IN
+  // ============================================================
+
+  const approveLateCheckout = async () => {
+    if (!pendingLateCheckout) return;
+
+    setLateDecisionLoading(true);
+
+    try {
+      const now = new Date();
+      const { user, session } = pendingLateCheckout;
+
+      const { data: existing, error: lookupError } = await supabase
+        .from('attendances')
+        .select('*')
+        .eq('event_id', selectedEventIdRef.current || selectedEventId)
+        .eq('session_id', session.id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (lookupError) {
+        throw lookupError;
+      }
+
+      if (existing?.check_out_time) {
+        setScanResult({
+          success: false,
+          message: `${user.full_name || user.name || 'Student'} has already checked out for this session.`,
+          user,
+          status: 'LATE',
+          action: 'CHECK_OUT',
+        });
+        setPendingLateCheckout(null);
+        return;
+      }
+
+      if (existing) {
+        const { data, error } = await supabase
+          .from('attendances')
+          .update({
+            check_out_time: now.toISOString(),
+            status: 'late',
+          })
+          .eq('id', existing.id)
+          .select('*');
+
+        if (error) throw error;
+
+        if (!data?.length) {
+          throw new Error('Unable to save the late checkout.');
+        }
+      } else {
+        const { error } = await supabase
+          .from('attendances')
+          .insert([{
+            event_id: selectedEventIdRef.current || selectedEventId,
+            session_id: session.id,
+            user_id: user.id,
+            check_in_time: null,
+            check_out_time: now.toISOString(),
+            status: 'late',
+            cert_sent: false,
+          }]);
+
+        if (error) throw error;
+      }
+
+      setScanResult({
+        success: true,
+        message:
+          `${user.full_name || user.name || 'Student'} was approved by the admin for LATE checkout.`,
+        user,
+        status: 'LATE',
+        action: 'CHECK_OUT',
+      });
+
+      setPendingLateCheckout(null);
+    } catch (error: any) {
+      console.error('Late checkout approval failed:', error);
+
+      setScanResult({
+        success: false,
+        message:
+          error?.message ||
+          'Unable to approve the late checkout.',
+        action: 'CHECK_OUT',
+      });
+    } finally {
+      setLateDecisionLoading(false);
+    }
+  };
+
+  const openCheckInForPendingStudent = async () => {
+    if (!pendingLateCheckout) return;
+
+    setLateDecisionLoading(true);
+
+    try {
+      const { session, user } = pendingLateCheckout;
+
+      const { data, error } = await supabase
+        .from('dev_event_sessions')
+        .update({
+          check_in_open: true,
+        })
+        .eq('id', session.id)
+        .select('*')
+        .single();
+
+      if (error) throw error;
+
+      const updatedSessions = sessionsRef.current.map(
+        (item: any) =>
+          String(item.id) === String(session.id)
+            ? { ...item, ...data }
+            : item
+      );
+
+      sessionsRef.current = updatedSessions;
+      setSessions(updatedSessions);
+
+      activeSessionRef.current = data;
+      setActiveSession(data);
+      setSelectedSessionId(data.id);
+
+      setScanResult({
+        success: true,
+        message:
+          `Check-in was opened by the admin for ${user.full_name || user.name || 'this student'}. Scan the student's QR again to record a normal check-in.`,
+        user,
+        status: 'PRESENT',
+        action: 'CHECK_IN',
+      });
+
+      setPendingLateCheckout(null);
+    } catch (error: any) {
+      console.error('Opening check-in failed:', error);
+
+      setScanResult({
+        success: false,
+        message:
+          error?.message ||
+          'Unable to open check-in.',
+        action: 'CHECK_IN',
+      });
+    } finally {
+      setLateDecisionLoading(false);
+    }
+  };
+
+  const rejectLateCheckout = () => {
+    const user = pendingLateCheckout?.user;
+
+    setPendingLateCheckout(null);
+
+    setScanResult({
+      success: false,
+      message:
+        `${user?.full_name || user?.name || 'Student'} was not granted checkout.`,
+      user,
+      action: 'CHECK_OUT',
+    });
+  };
+
   const processAttendance = async (userId: string) => {
     const cleanUserId = userId.trim();
 
@@ -1112,103 +1091,20 @@ const fallbackStart =
       return;
     }
 
-    // Always resolve the session from the CURRENT TIME at scan time.
-    // Never reuse a stale Morning session during Afternoon.
+    // The admin-opened session is now the source of truth.
     const session = getCurrentSession(sessionsRef.current);
 
     if (!session) {
       setScanResult({
         success: false,
         message:
-          'No attendance session is currently open. Please scan during an active check-in or check-out window.',
+          'No attendance session is currently OPEN. Ask the admin to open Check-in or Check-out.',
       });
       return;
     }
 
-    const now = new Date();
-
-    const attendanceStartRaw =
-      session.attendance_start || session.start_time;
-    const attendanceEndRaw =
-      session.attendance_end || session.end_time;
-    const checkoutStartRaw =
-      session.checkout_start ?? session.check_out_start;
-    const checkoutEndRaw =
-      session.checkout_end ??
-      session.check_out_end ??
-      session.cutoff_time ??
-      attendanceEndRaw;
-
-    if (
-      !attendanceStartRaw ||
-      !attendanceEndRaw ||
-      !checkoutStartRaw ||
-      !checkoutEndRaw
-    ) {
-      setScanResult({
-        success: false,
-        message: `${session.session_name || 'This session'} has incomplete attendance windows.`,
-      });
-      return;
-    }
-
-    const attendanceStart = createLocalDate(
-      session.session_date,
-      String(attendanceStartRaw).slice(0, 8)
-    );
-    const attendanceEnd = createLocalDate(
-      session.session_date,
-      String(attendanceEndRaw).slice(0, 8)
-    );
-    const checkoutStart = createLocalDate(
-      session.session_date,
-      String(checkoutStartRaw).slice(0, 8)
-    );
-    const checkoutEnd = createLocalDate(
-      session.session_date,
-      String(checkoutEndRaw).slice(0, 8)
-    );
-
-    const inCheckInWindow =
-      now >= attendanceStart && now <= attendanceEnd;
-    const inCheckOutWindow =
-      now >= checkoutStart && now <= checkoutEnd;
-
-    // There should normally never be overlapping windows.
-    // If there is, CHECK-OUT gets priority only when the student already
-    // has an attendance record. Otherwise CHECK-IN remains the action.
-    let action: 'CHECK_IN' | 'CHECK_OUT';
-
-    if (inCheckInWindow) {
-      action = 'CHECK_IN';
-    } else if (inCheckOutWindow) {
-      action = 'CHECK_OUT';
-    } else {
-      setScanResult({
-        success: false,
-        message:
-          `No attendance action is available for ${session.session_name || 'this session'} at ${formatTime(now)}.`,
-        action: 'CHECK_IN',
-      });
-      return;
-    }
-
-    console.log('================ ATTENDANCE STATE ================');
-    console.log({
-      eventId,
-      sessionId: session.id,
-      sessionName: session.session_name,
-      now: now.toString(),
-      action,
-      attendanceStart: attendanceStart.toString(),
-      attendanceEnd: attendanceEnd.toString(),
-      checkoutStart: checkoutStart.toString(),
-      checkoutEnd: checkoutEnd.toString(),
-    });
-    console.log('====================================================');
-
-    // Keep UI synchronized with the session actually used for this scan.
     activeSessionRef.current = session;
+
     if (selectedSessionId !== session.id) {
       setSelectedSessionId(session.id);
       setActiveSession(session);
@@ -1243,9 +1139,6 @@ const fallbackStart =
 
       // ========================================================
       // 2. FIND ATTENDANCE FOR THIS EXACT SESSION
-      //
-      // NEVER query only event_id + user_id.
-      // Morning and Afternoon are separate records.
       // ========================================================
 
       const {
@@ -1260,15 +1153,60 @@ const fallbackStart =
         .maybeSingle();
 
       if (existingAttendanceError) {
-        console.error(
-          'Attendance lookup error:',
-          existingAttendanceError
-        );
         throw existingAttendanceError;
       }
 
       // ========================================================
-      // 3. CHECK-IN ACTION
+      // 3. DETERMINE ACTION FROM ADMIN CONTROLS
+      //
+      // If both are open:
+      // - no attendance yet -> CHECK-IN
+      // - checked in, no checkout -> CHECK-OUT
+      // - already completed -> CHECK-IN (and report duplicate)
+      // ========================================================
+
+      const checkInOpen =
+        session.check_in_open === true;
+
+      const checkOutOpen =
+        session.check_out_open === true;
+
+      let action: 'CHECK_IN' | 'CHECK_OUT';
+
+      if (checkInOpen && checkOutOpen) {
+        action =
+          existingAttendance &&
+          !existingAttendance.check_out_time
+            ? 'CHECK_OUT'
+            : 'CHECK_IN';
+      } else if (checkInOpen) {
+        action = 'CHECK_IN';
+      } else if (checkOutOpen) {
+        action = 'CHECK_OUT';
+      } else {
+        setScanResult({
+          success: false,
+          message:
+            `${session.session_name || 'This session'} is currently closed by the admin.`,
+          user: userData,
+        });
+        return;
+      }
+
+      console.log('================ ATTENDANCE STATE ================');
+      console.log({
+        eventId,
+        sessionId: session.id,
+        sessionName: session.session_name,
+        checkInOpen,
+        checkOutOpen,
+        action,
+        existingAttendance,
+      });
+      console.log('====================================================');
+
+      // ========================================================
+      // 4. CHECK-IN
       // ========================================================
 
       if (action === 'CHECK_IN') {
@@ -1289,8 +1227,6 @@ const fallbackStart =
           return;
         }
 
-        // A record already exists for THIS session.
-        // Morning's record does not reach this query when Afternoon is active.
         if (existingAttendance) {
           if (existingAttendance.check_out_time) {
             setScanResult({
@@ -1312,62 +1248,25 @@ const fallbackStart =
           return;
         }
 
-        const finalStatus = String(
-          checkInStatus.status || 'PRESENT'
-        ).toLowerCase();
-
-        // ======================================================
-        // CREATE NEW ATTENDANCE FOR THIS SESSION
-        // ======================================================
-
         const { error: insertError } = await supabase
           .from('attendances')
-          .insert([
-            {
-              event_id: eventId,
-              session_id: session.id,
-              user_id: cleanUserId,
-              check_in_time: now.toISOString(),
-              status: finalStatus,
-              cert_sent: false,
-            },
-          ]);
+          .insert([{
+            event_id: eventId,
+            session_id: session.id,
+            user_id: cleanUserId,
+            check_in_time: new Date().toISOString(),
+            status: 'present',
+            cert_sent: false,
+          }]);
 
         if (insertError) {
-          console.error(
-            'CHECK-IN INSERT ERROR:',
-            insertError
-          );
+          console.error('CHECK-IN INSERT ERROR:', insertError);
 
           if (insertError.code === '23505') {
-            // If the exact session row now exists, this is simply a
-            // concurrent duplicate scan. Otherwise the database still
-            // contains an incorrect broader UNIQUE rule.
-            const {
-              data: duplicateForSession,
-            } = await supabase
-              .from('attendances')
-              .select('id, session_id, check_in_time, check_out_time')
-              .eq('event_id', eventId)
-              .eq('session_id', session.id)
-              .eq('user_id', cleanUserId)
-              .maybeSingle();
-
-            if (duplicateForSession) {
-              setScanResult({
-                success: false,
-                message:
-                  `${studentName} is already checked in for ${session.session_name || 'this session'}.`,
-                user: userData,
-                action: 'CHECK_IN',
-              });
-              return;
-            }
-
             setScanResult({
               success: false,
               message:
-                'The database is still blocking multiple sessions. Verify that attendances has UNIQUE(event_id, user_id, session_id) and no UNIQUE(event_id, user_id) rule remains.',
+                'This student already has an attendance record for this session.',
               user: userData,
               action: 'CHECK_IN',
             });
@@ -1380,9 +1279,9 @@ const fallbackStart =
         setScanResult({
           success: true,
           message:
-            `Verified ${session.session_name || 'session'} check-in for ${studentName}! (${checkInStatus.status === 'LATE' ? 'LATE' : 'ON TIME'})`,
+            `Verified ${session.session_name || 'session'} check-in for ${studentName}!`,
           user: userData,
-          status: checkInStatus.status,
+          status: 'PRESENT',
           action: 'CHECK_IN',
         });
 
@@ -1390,7 +1289,7 @@ const fallbackStart =
       }
 
       // ========================================================
-      // 4. CHECK-OUT ACTION
+      // 5. CHECK-OUT
       // ========================================================
 
       const checkOutStatus = getSessionActionStatus(
@@ -1410,18 +1309,22 @@ const fallbackStart =
         return;
       }
 
-      // IMPORTANT:
-      // No attendance record for THIS session means the student missed
-      // this session's check-in. Do NOT create a late check-in and do NOT
-      // touch Morning's record.
+      // No check-in: ADMIN DECISION REQUIRED.
       if (!existingAttendance) {
+        setPendingLateCheckout({
+          user: userData,
+          session,
+        });
+
         setScanResult({
           success: false,
           message:
-            `${studentName} did not check in for ${session.session_name || 'this session'}. Check-out is unavailable.`,
+            `${studentName} has no check-in record for ${session.session_name || 'this session'}. Admin decision required.`,
           user: userData,
+          status: 'LATE',
           action: 'CHECK_OUT',
         });
+
         return;
       }
 
@@ -1442,20 +1345,20 @@ const fallbackStart =
         );
       }
 
-      const { data: updatedAttendance, error: checkoutError } =
-        await supabase
-          .from('attendances')
-          .update({
-            check_out_time: now.toISOString(),
-          })
-          .eq('id', existingAttendance.id)
-          .select('*');
+      const now = new Date();
+
+      const {
+        data: updatedAttendance,
+        error: checkoutError,
+      } = await supabase
+        .from('attendances')
+        .update({
+          check_out_time: now.toISOString(),
+        })
+        .eq('id', existingAttendance.id)
+        .select('*');
 
       if (checkoutError) {
-        console.error(
-          'CHECK-OUT UPDATE ERROR:',
-          checkoutError
-        );
         throw checkoutError;
       }
 
@@ -1464,11 +1367,6 @@ const fallbackStart =
           'Check-out failed: no attendance row was updated.'
         );
       }
-
-      console.log(
-        'CHECK-OUT SAVED:',
-        updatedAttendance[0]
-      );
 
       setScanResult({
         success: true,
@@ -1862,6 +1760,62 @@ const fallbackStart =
 
             </div>
 
+          </div>
+        )}
+
+        {/* ======================================================
+            ADMIN DECISION: CHECKOUT WITHOUT CHECK-IN
+        ======================================================= */}
+
+        {pendingLateCheckout && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-5 space-y-4">
+            <div>
+              <p className="text-xs uppercase tracking-wider font-bold text-amber-300">
+                Admin Decision Required
+              </p>
+
+              <p className="text-sm font-bold text-white mt-1">
+                {pendingLateCheckout.user?.full_name ||
+                  pendingLateCheckout.user?.name ||
+                  'Student'}{' '}
+                has no check-in record for{' '}
+                {pendingLateCheckout.session?.session_name ||
+                  'this session'}.
+              </p>
+
+              <p className="text-xs text-slate-400 mt-1">
+                Choose how the exception should be recorded.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={approveLateCheckout}
+                disabled={lateDecisionLoading}
+                className="bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-3 rounded-xl transition"
+              >
+                Allow Late Checkout
+              </button>
+
+              <button
+                type="button"
+                onClick={openCheckInForPendingStudent}
+                disabled={lateDecisionLoading}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-4 py-3 rounded-xl transition"
+              >
+                Open Check-in — No Late
+              </button>
+
+              <button
+                type="button"
+                onClick={rejectLateCheckout}
+                disabled={lateDecisionLoading}
+                className="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-4 py-3 rounded-xl transition"
+              >
+                Reject
+              </button>
+            </div>
           </div>
         )}
 

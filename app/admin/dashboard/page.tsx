@@ -17,6 +17,9 @@ import {
   UserCheck,
   Download,
   Trash2,
+  Lock,
+  Unlock,
+  RefreshCw,
 } from 'lucide-react';
 
 type SessionType = 'full' | 'morning' | 'afternoon';
@@ -134,6 +137,15 @@ export default function AdminDashboard() {
 
   const [selectedEventSessions, setSelectedEventSessions] =
     useState<any[]>([]);
+
+  // ============================================================
+  // MANUAL SESSION CONTROLS
+  // Admin is the authority for opening/closing check-in and checkout.
+  // ============================================================
+
+  const [sessionControlLoading, setSessionControlLoading] =
+    useState<string | null>(null);
+
 
   // ============================================================
   // AUTHORIZATION CHECK
@@ -284,6 +296,63 @@ export default function AdminDashboard() {
       );
 
       setSelectedEventSessions([]);
+    }
+  };
+
+
+  // ============================================================
+  // MANUAL SESSION CONTROL
+  //
+  // Scheduled times remain as the planned schedule.
+  // check_in_open / check_out_open are the actual scanner controls.
+  // ============================================================
+
+  const setSessionControl = async (
+    sessionId: string,
+    control: 'check_in_open' | 'check_out_open',
+    open: boolean
+  ) => {
+    if (!sessionId) return;
+
+    setSessionControlLoading(`${sessionId}:${control}`);
+
+    try {
+      const { data, error } = await supabase
+        .from('dev_event_sessions')
+        .update({
+          [control]: open,
+        })
+        .eq('id', sessionId)
+        .select('*')
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      setSelectedEventSessions((current) =>
+        current.map((session: any) =>
+          String(session.id) === String(sessionId)
+            ? { ...session, ...data }
+            : session
+        )
+      );
+
+      setEventMsg({
+        text: `${data.session_name || 'Session'} ${control === 'check_in_open' ? 'check-in' : 'check-out'} is now ${open ? 'OPEN' : 'CLOSED'}.`,
+        type: 'success',
+      });
+    } catch (err: any) {
+      console.error('Session control update failed:', err);
+
+      setEventMsg({
+        text:
+          err?.message ||
+          'Unable to update the session control. Check your Supabase RLS policy.',
+        type: 'error',
+      });
+    } finally {
+      setSessionControlLoading(null);
     }
   };
 
@@ -525,6 +594,8 @@ export default function AdminDashboard() {
                   session.checkout_end ||
                   session.cutoff_time ||
                   null,
+                attendance_status:
+                  row?.status || null,
                 attendance_id:
                   row?.id || null,
                 check_in_time:
@@ -589,6 +660,18 @@ export default function AdminDashboard() {
                 !sessionRow.check_out_time
             );
 
+          // A checkout can be approved by an admin even when the
+          // student never checked in. That record is intentionally
+          // stored as LATE so the report preserves the exception.
+          const hasAdminApprovedLateCheckout =
+            sessionAttendance.some(
+              (sessionRow: any) =>
+                !sessionRow.check_in_time &&
+                Boolean(sessionRow.check_out_time) &&
+                String(sessionRow.attendance_status || '').toLowerCase() ===
+                  'late'
+            );
+
           const isSessionFinished = (
             sessionRow: any
           ) => {
@@ -637,7 +720,9 @@ export default function AdminDashboard() {
             hasAllSessionsCompleted
           ) {
             attendanceStatus =
-              'COMPLETED';
+              hasAdminApprovedLateCheckout
+                ? 'LATE'
+                : 'COMPLETED';
           } else if (
             hasNoSignOut
           ) {
@@ -648,6 +733,11 @@ export default function AdminDashboard() {
           ) {
             attendanceStatus =
               'INCOMPLETE';
+          } else if (
+            hasAdminApprovedLateCheckout
+          ) {
+            attendanceStatus =
+              'LATE';
           }
 
           const latestCheckIn =
@@ -2446,9 +2536,126 @@ const handleExportCSV = async () => {
                               {session.cutoff_time && (
                                 <p className="text-xs text-amber-400 whitespace-nowrap">
                                   <span className="text-slate-500">Cutoff:</span>{' '}
-                                  {formatTime12Hour(session.checkout_end)}
+                                  {formatTime12Hour(session.checkout_end || session.cutoff_time)}
                                 </p>
                               )}
+                            </div>
+                          </div>
+
+                          {/* MANUAL SCANNING CONTROLS */}
+                          <div className="mt-4 pt-4 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                                    Check-in Control
+                                  </p>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {session.check_in_open === true ? (
+                                      <Unlock className="w-4 h-4 text-emerald-400" />
+                                    ) : (
+                                      <Lock className="w-4 h-4 text-rose-400" />
+                                    )}
+                                    <span
+                                      className={`text-xs font-bold ${
+                                        session.check_in_open === true
+                                          ? 'text-emerald-400'
+                                          : 'text-rose-400'
+                                      }`}
+                                    >
+                                      {session.check_in_open === true ? 'OPEN' : 'CLOSED'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSessionControl(
+                                      session.id,
+                                      'check_in_open',
+                                      session.check_in_open !== true
+                                    )
+                                  }
+                                  disabled={
+                                    sessionControlLoading ===
+                                    `${session.id}:check_in_open`
+                                  }
+                                  className={`px-3 py-2 rounded-lg text-[11px] font-bold transition disabled:opacity-50 ${
+                                    session.check_in_open === true
+                                      ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20 hover:bg-rose-500/20'
+                                      : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20'
+                                  }`}
+                                >
+                                  {sessionControlLoading ===
+                                  `${session.id}:check_in_open`
+                                    ? 'Updating...'
+                                    : session.check_in_open === true
+                                    ? 'Close Check-in'
+                                    : 'Open Check-in'}
+                                </button>
+                              </div>
+
+                              <p className="text-[10px] text-slate-600 mt-2">
+                                Scheduled window is reference only.
+                              </p>
+                            </div>
+
+                            <div className="rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+                                    Check-out Control
+                                  </p>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {session.check_out_open === true ? (
+                                      <Unlock className="w-4 h-4 text-emerald-400" />
+                                    ) : (
+                                      <Lock className="w-4 h-4 text-rose-400" />
+                                    )}
+                                    <span
+                                      className={`text-xs font-bold ${
+                                        session.check_out_open === true
+                                          ? 'text-emerald-400'
+                                          : 'text-rose-400'
+                                      }`}
+                                    >
+                                      {session.check_out_open === true ? 'OPEN' : 'CLOSED'}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSessionControl(
+                                      session.id,
+                                      'check_out_open',
+                                      session.check_out_open !== true
+                                    )
+                                  }
+                                  disabled={
+                                    sessionControlLoading ===
+                                    `${session.id}:check_out_open`
+                                  }
+                                  className={`px-3 py-2 rounded-lg text-[11px] font-bold transition disabled:opacity-50 ${
+                                    session.check_out_open === true
+                                      ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20 hover:bg-rose-500/20'
+                                      : 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 hover:bg-emerald-500/20'
+                                  }`}
+                                >
+                                  {sessionControlLoading ===
+                                  `${session.id}:check_out_open`
+                                    ? 'Updating...'
+                                    : session.check_out_open === true
+                                    ? 'Close Check-out'
+                                    : 'Open Check-out'}
+                                </button>
+                              </div>
+
+                              <p className="text-[10px] text-slate-600 mt-2">
+                                Admin controls the actual checkout availability.
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -2503,6 +2710,8 @@ const handleExportCSV = async () => {
                         const statusClass =
                           completed
                             ? 'bg-emerald-500/5 border-emerald-500/20'
+                            : status === 'LATE'
+                            ? 'bg-amber-500/5 border-amber-500/20'
                             : status === 'PENDING'
                             ? 'bg-slate-500/5 border-slate-700'
                             : 'bg-rose-500/5 border-rose-500/20';
@@ -2510,6 +2719,8 @@ const handleExportCSV = async () => {
                         const badgeClass =
                           completed
                             ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                            : status === 'LATE'
+                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
                             : status === 'PENDING'
                             ? 'bg-slate-500/10 text-slate-300 border-slate-600'
                             : 'bg-rose-500/10 text-rose-300 border-rose-500/20';
